@@ -195,7 +195,7 @@ def get_distinguishable_metric_name(lm):
     """
     Constructs a metric name for CSV exports as <metric_name>_<metric_id>.
     """
-    base_name = lm.target_name or lm.global_metric.label or lm.global_metric.name
+    base_name = lm.target_name or lm.global_metric.name
     # Keep it clean as per user request
     return f"{base_name}_{lm.id}"
 
@@ -1411,7 +1411,7 @@ def get_fallback_project_name():
 def legacy_leaderboard_redirect(leaderboard_id):
     p_name = get_fallback_project_name()
     if p_name:
-        return redirect(url_for('leaderboard_view', project_name=p_name, leaderboard_id=leaderboard_id))
+        return redirect(url_for('leaderboard_view', project_name=p_name, leaderboard_id=leaderboard_id), code=301)
     return redirect(url_for('list_projects'))
 
 
@@ -1420,7 +1420,7 @@ def legacy_leaderboard_redirect(leaderboard_id):
 def legacy_comparison_redirect(leaderboard_id):
     p_name = get_fallback_project_name()
     if p_name:
-        return redirect(url_for('comparison_view', project_name=p_name, leaderboard_id=leaderboard_id))
+        return redirect(url_for('comparison_view', project_name=p_name, leaderboard_id=leaderboard_id), code=301)
     return redirect(url_for('list_projects'))
 # -------------------------------------------------
 
@@ -2263,7 +2263,7 @@ def execute_visualization(project_name, lv_id, sample_id, submission_id=None):
     mapping_hash = hashlib.md5((lv.arg_mappings or "").encode()).hexdigest()
     cache_key = f"viz_{lv_id}_{sample_id}_{submission_id or 'none'}_{code_hash}_{mapping_hash}"
     cache_hash = hashlib.md5(cache_key.encode()).hexdigest()
-    cache_dir = os.path.join(os.getcwd(), 'data', 'viz_cache')
+    cache_dir = os.path.join(dtof_data_dir, 'viz_cache')
     os.makedirs(cache_dir, exist_ok=True)
     cache_path = os.path.join(cache_dir, f"{cache_hash}.png")
     
@@ -2340,7 +2340,7 @@ def execute_aggregated_visualization(project_name, lv_id, submission_id=None):
     mapping_hash = hashlib.md5((lv.arg_mappings or "").encode()).hexdigest()
     cache_key = f"viz_agg_{lv_id}_{submission_id or 'none'}_{code_hash}_{mapping_hash}"
     cache_hash = hashlib.md5(cache_key.encode()).hexdigest()
-    cache_dir = os.path.join(os.getcwd(), 'data', 'viz_cache')
+    cache_dir = os.path.join(dtof_data_dir, 'viz_cache')
     os.makedirs(cache_dir, exist_ok=True)
     cache_path = os.path.join(cache_dir, f"{cache_hash}.png")
     
@@ -2483,7 +2483,10 @@ def extract_code_from_file(file_storage):
                     
                     for encoding in ['utf-8', 'latin-1', 'cp1252']:
                         try:
-                            return content.decode(encoding)
+                            # Same DLP round-trip the .txt/.py branch applies below:
+                            # obfuscated "BASE64:..." bodies must be decoded here or
+                            # they are stored verbatim and fail to compile at run time.
+                            return handle_dlp_safe_code(content.decode(encoding))
                         except UnicodeDecodeError:
                             continue
             except Exception as e:
@@ -2574,7 +2577,12 @@ def edit_global_metric(project_name, metric_id):
             if "Implementation will be loaded from ZIP" in python_code:
                 flash('Invalid code submitted (placeholder). Update canceled.', 'danger')
                 return redirect(url_for('metrics_view'))
-        
+            # Empty body: keep the stored code rather than wiping it. Without this
+            # the assignment below persisted '', and every leaderboard using this
+            # metric then failed with "No callable function found in code."
+            python_code = metric.python_code
+            flash('No code submitted — keeping the existing implementation.', 'warning')
+
         metric.name = name
         metric.description = description
         metric.python_code = python_code
@@ -2641,6 +2649,11 @@ def clone_project(project_id):
                 image_width=old_lb.image_width,
                 last_sample_filter=old_lb.last_sample_filter
             )
+            # leaderboard_datasets is the authoritative link; dataset_id is only a
+            # legacy fallback. Copying the column alone reduced a multi-dataset
+            # board to its first dataset, silently dropping the rest from scoring,
+            # comparison and downloads.
+            new_lb.datasets = list(old_lb.datasets)
             db.session.add(new_lb)
             db.session.flush()
 
@@ -2760,9 +2773,11 @@ def delete_project(project_id):
     print(f"DEBUG: Deleting project {project_id}", file=sys.stderr)
     try:
         project = Project.query.get_or_404(project_id)
-        
-        # Delete project folder if exists? logic...
-        
+
+        # Cascades to leaderboards -> submissions in the DB; the on-disk upload
+        # trees have to be removed explicitly.
+        purge_submission_folders([s.id for lb in project.leaderboards for s in lb.submissions])
+
         db.session.delete(project)
         db.session.commit()
         print(f"DEBUG: Delete Success for ID {project_id}", file=sys.stderr)
@@ -2882,7 +2897,10 @@ def edit_visualization(project_name, viz_id):
             if "Implementation will be loaded from ZIP" in python_code:
                 flash('Invalid code submitted (placeholder). Update canceled.', 'danger')
                 return redirect(url_for('visualizations_view', project_name=project_name))
-        
+            # Same as edit_global_metric: an empty body must not wipe the stored code.
+            python_code = viz.python_code
+            flash('No code submitted — keeping the existing implementation.', 'warning')
+
         viz.name = name
         viz.description = description
         viz.python_code = python_code
@@ -3833,12 +3851,11 @@ def upload_submission(project_name, leaderboard_id):
                 if not has_predictions and has_zips:
                     is_bulk = True
                 
-                with open("debug_log.txt", "a") as f:
-                    f.write(f"DEBUG: file_list={file_list}\\n")
-                    f.write(f"DEBUG: has_predictions={has_predictions}, has_zips={has_zips}, is_bulk={is_bulk}\\n")
+                app.logger.debug(
+                    "Submission ZIP inspect: files=%d has_predictions=%s has_zips=%s is_bulk=%s",
+                    len(file_list), has_predictions, has_zips, is_bulk)
         except Exception as e:
-            with open("debug_log.txt", "a") as f:
-                f.write(f"DEBUG: Exception reading zip: {e}\\n")
+            app.logger.warning(f"Could not read submission ZIP, treating as single: {e}")
             pass # Fallback to single
 
         if is_bulk:
@@ -4068,7 +4085,7 @@ def comparison_scalar_data(project_name, leaderboard_id):
     #    to their friendly metric names for readable labels.
     lm_label = {}
     for lm in leaderboard.leaderboard_metrics:
-        lm_label[f"lm_{lm.id}"] = lm.target_name or lm.global_metric.label or lm.global_metric.name
+        lm_label[f"lm_{lm.id}"] = lm.target_name or lm.global_metric.name
     # Submissions can share a display name; append the id to disambiguate those.
     sub_name_counts = {}
     for sub in submissions:
@@ -5604,9 +5621,20 @@ def delete_dataset(dataset_id):
 @app.route('/<project_name>/delete_leaderboard/<int:leaderboard_id>', methods=['POST'])
 def delete_leaderboard(project_name, leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
+    # The DB cascade drops the Submission rows, but not their contents on disk —
+    # delete_submission() does this per submission and the same has to happen here,
+    # or every prediction payload is orphaned under uploads/submissions/.
+    purge_submission_folders([s.id for s in leaderboard.submissions])
     db.session.delete(leaderboard)
     db.session.commit()
     return redirect(url_for('index'))
+
+def purge_submission_folders(submission_ids):
+    """Remove the on-disk upload tree for each submission id."""
+    for sub_id in submission_ids:
+        shutil.rmtree(os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(sub_id)),
+                      ignore_errors=True)
+
 
 @app.route('/<project_name>/delete_submission/<int:submission_id>', methods=['POST'])
 def delete_submission(project_name, submission_id):
@@ -6135,10 +6163,13 @@ def leaderboard_metrics_status(leaderboard_id):
                     pass
             
             # Build Aggregation Query - Fetch raw values
+            # No Sample column is used here, and uploaded metric_* rows carry
+            # sample_name but no sample_id — an inner join on Sample silently
+            # discarded every one of them.
             query = db.session.query(
-                CustomField.name, 
+                CustomField.name,
                 CustomField.value_float
-            ).join(Sample).filter(
+            ).filter(
                 CustomField.submission_id == sub.id,
                 CustomField.field_type == 'metric'
             )
@@ -6549,7 +6580,7 @@ def check_and_migrate_db():
                     'image_width': 'TEXT',
                     'last_sample_filter': 'TEXT',
                     'metric_aggregation': 'TEXT DEFAULT "{}"',
-                    'comparison_display_columns': 'TEXT DEFAULT "{}"' 
+                    'comparison_display_columns': f'TEXT DEFAULT "{DEFAULT_COMPARISON_DISPLAY_COLUMNS}"' 
                 }
                 
                 for col_name, col_type in columns_to_check.items():
@@ -6563,7 +6594,23 @@ def check_and_migrate_db():
                             print(f"Successfully added '{col_name}'.")
                         except Exception as e:
                             print(f"Failed to add '{col_name}': {e}")
-                            
+
+                # Repair rows stamped by the earlier migration, which gave this
+                # column a JSON default ("{}") even though it holds a
+                # comma-separated list of column keys. '{}' splits to ['{}'],
+                # matches no known key, and renders the comparison table with no
+                # columns at all.
+                try:
+                    cursor.execute(
+                        "UPDATE leaderboard SET comparison_display_columns = ? "
+                        "WHERE comparison_display_columns = '{}'",
+                        (DEFAULT_COMPARISON_DISPLAY_COLUMNS,))
+                    if cursor.rowcount:
+                        print(f"Repaired 'comparison_display_columns' on {cursor.rowcount} leaderboard(s).")
+                    conn.commit()
+                except Exception as e:
+                    print(f"Migration error (comparison_display_columns repair): {e}")
+
                 conn.close()
                 
                 # --- 4. LeaderboardMetric Aggregation Columns ---
@@ -7294,8 +7341,8 @@ def download_submissions_full_bulk(leaderboard_id):
 def _one_shot_viz_cache_wipe():
     """Wipe the viz cache once per invalidation epoch. Bump VERSION to trigger again."""
     VERSION = "v1"
-    cache_dir = os.path.join(os.getcwd(), 'data', 'viz_cache')
-    marker = os.path.join(os.getcwd(), 'data', f'.viz_cache_invalidated_{VERSION}')
+    cache_dir = os.path.join(dtof_data_dir, 'viz_cache')
+    marker = os.path.join(dtof_data_dir, f'.viz_cache_invalidated_{VERSION}')
     if os.path.exists(marker):
         return
     if os.path.exists(cache_dir):
