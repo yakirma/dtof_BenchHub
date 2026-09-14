@@ -95,6 +95,62 @@
                 </form>
             </div>
         </div>
+
+        <div class="card shadow-sm border-0 mt-4">
+            <div class="card-header bg-body-tertiary py-3 d-flex align-items-center">
+                <h4 class="mb-0 fs-5"><i class="bi bi-arrow-repeat me-2"></i>Version &amp; Updates</h4>
+                {% if update_status.behind %}
+                <span class="badge bg-warning text-dark ms-auto">{{ update_status.behind }} behind</span>
+                {% elif not update_status.error %}
+                <span class="badge bg-success ms-auto">Up to date</span>
+                {% endif %}
+            </div>
+            <div class="card-body">
+                {% if update_status.error %}
+                <div class="alert alert-warning py-2 mb-3 small">{{ update_status.error }}</div>
+                {% endif %}
+
+                <dl class="row mb-3 small">
+                    <dt class="col-sm-3">Running</dt>
+                    <dd class="col-sm-9">
+                        <code>{{ update_status.local or '?' }}</code>
+                        {% if update_status.branch %}<span class="text-muted">on {{ update_status.branch }}</span>{% endif %}
+                        {% if update_status.subject %}<br><span class="text-muted">{{ update_status.subject }}</span>{% endif %}
+                        {% if update_status.date %}<br><span class="text-muted">{{ update_status.date }}</span>{% endif %}
+                    </dd>
+                    <dt class="col-sm-3">origin/main</dt>
+                    <dd class="col-sm-9"><code>{{ update_status.remote or 'unknown' }}</code></dd>
+                </dl>
+
+                {% if update_status.dirty or update_status.ahead or (update_status.branch and update_status.branch != 'main') %}
+                <div class="alert alert-secondary py-2 small">
+                    <strong>The updater will refuse to run:</strong>
+                    <ul class="mb-0 mt-1">
+                        {% if update_status.branch and update_status.branch != 'main' %}
+                        <li>checked out on <code>{{ update_status.branch }}</code>, not <code>main</code></li>{% endif %}
+                        {% if update_status.dirty %}<li>the checkout has uncommitted changes</li>{% endif %}
+                        {% if update_status.ahead %}
+                        <li>{{ update_status.ahead }} local commit(s) are not on origin/main</li>{% endif %}
+                    </ul>
+                </div>
+                {% endif %}
+
+                <p class="small text-muted mb-2">
+                    Updating pulls new code and restarts the stack, so it runs from a shell rather than
+                    from this page — this app has no login, and anyone who can reach it could otherwise
+                    deploy to it. On the machine running BenchHub:
+                </p>
+                <pre class="bg-body-tertiary border rounded p-2 small mb-3">cd {{ update_status.repo }}
+./scripts/update.sh</pre>
+
+                <form method="POST" action="{{ url_for('check_for_updates') }}">
+                    <button type="submit" class="btn btn-sm btn-outline-primary">
+                        <i class="bi bi-cloud-arrow-down me-1"></i>Check for updates
+                    </button>
+                    <span class="form-text ms-2">Refreshes from origin. Nothing is installed or restarted.</span>
+                </form>
+            </div>
+        </div>
     </div>
 </div>
 {% endblock %}

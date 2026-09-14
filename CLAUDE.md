@@ -58,6 +58,12 @@ Most routes are nested under `/<project_name>/...`. `app.url_value_preprocessor`
 ### DLP Safe Mode
 For environments that block uploading Python source: the metric/visualization editor in the UI base64-encodes code client-side before POST; `handle_dlp_safe_code()` decodes server-side. The `scripts/obfuscator*.{html,py}` tools do the same out-of-band. Keep this round-trip working if you touch metric upload paths.
 
+## Updating a deployment
+
+`scripts/update.sh` fast-forwards the checkout to `origin/main`, runs `migrate_db.py`, and restarts the honcho stack. It refuses to act unless the checkout is clean, on `main`, and strictly behind the remote, so it can never discard local work. `./scripts/update.sh --check` reports status without changing anything.
+
+Applying an update is intentionally **not** reachable over HTTP. The app has no authentication, so an endpoint that pulls and executes new code would let anyone who can reach port 6060 deploy to it. The settings page only *reports* status (`get_update_status()`, read-only git queries) and offers a fetch-only "Check for updates" button.
+
 ## Conventions worth knowing
 
 - `leaderboard_view` must not touch `sub.custom_fields` or issue per-(metric, submission) queries — with many submissions that is samples x fields x submissions ORM rows and metrics x submissions round trips. Custom-metric column names come from one `DISTINCT` query, the sample-name filter is derived once, and every custom-metric raw value is fetched in one batched query keyed by `(submission_id, name)`.

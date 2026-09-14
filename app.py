@@ -1154,6 +1154,85 @@ def inject_settings():
     }
     return {'global_settings': settings_dict}
 
+# --- Version / update status (read-only) -------------------------------------
+# Reports how the running checkout compares to origin/main. Applying an update is
+# deliberately NOT exposed over HTTP: this app has no authentication, so an
+# endpoint that pulls and runs new code would let anyone who can reach the port
+# deploy to it. Use scripts/update.sh from a shell instead.
+APP_REPO_DIR = os.path.dirname(os.path.abspath(__file__))
+UPDATE_BRANCH = 'main'
+
+
+def _run_git(*args, timeout=60):
+    """Run a read-only git command against the app's own checkout."""
+    try:
+        res = subprocess.run(['git', '-C', APP_REPO_DIR, *args],
+                             capture_output=True, text=True, timeout=timeout)
+        return res.returncode == 0, res.stdout.strip(), res.stderr.strip()
+    except Exception as e:
+        return False, '', str(e)
+
+
+def get_update_status(fetch=False):
+    """
+    Compare the running checkout with origin/<UPDATE_BRANCH>.
+
+    fetch=False (the default) reports against the last known remote state, so the
+    settings page stays fast and works offline. The Check button passes True,
+    which refreshes the remote refs — it never merges or runs anything.
+    """
+    status = {'repo': APP_REPO_DIR, 'branch': None, 'local': None, 'subject': None,
+              'date': None, 'remote': None, 'behind': 0, 'ahead': 0,
+              'dirty': False, 'error': None}
+
+    ok, _, err = _run_git('rev-parse', '--is-inside-work-tree', timeout=10)
+    if not ok:
+        status['error'] = f'Not a git checkout ({err or "no repository"}).'
+        return status
+
+    _, status['branch'], _ = _run_git('rev-parse', '--abbrev-ref', 'HEAD', timeout=10)
+    _, status['local'], _ = _run_git('rev-parse', '--short', 'HEAD', timeout=10)
+    _, status['subject'], _ = _run_git('log', '-1', '--format=%s', timeout=10)
+    _, status['date'], _ = _run_git('log', '-1', '--format=%cd',
+                                    '--date=format:%Y-%m-%d %H:%M', timeout=10)
+    ok, out, _ = _run_git('status', '--porcelain', timeout=20)
+    status['dirty'] = bool(ok and out)
+
+    if fetch:
+        ok, _, err = _run_git('fetch', 'origin', UPDATE_BRANCH, timeout=60)
+        if not ok:
+            status['error'] = f'Could not reach origin: {err}'
+            return status
+
+    ref = f'origin/{UPDATE_BRANCH}'
+    ok, remote, err = _run_git('rev-parse', '--short', ref, timeout=10)
+    if not ok:
+        status['error'] = f'No {ref} to compare against ({err}).'
+        return status
+    status['remote'] = remote
+
+    ok, counts, _ = _run_git('rev-list', '--left-right', '--count', f'{ref}...HEAD', timeout=20)
+    if ok and counts:
+        parts = counts.split()
+        if len(parts) == 2:
+            status['behind'], status['ahead'] = int(parts[0]), int(parts[1])
+    return status
+
+
+@app.route('/app-settings/check-updates', methods=['POST'])
+def check_for_updates():
+    """Refresh remote refs and report. Fetch only — nothing is merged or run."""
+    status = get_update_status(fetch=True)
+    if status['error']:
+        flash(status['error'], 'danger')
+    elif status['behind']:
+        flash(f"{status['behind']} new commit(s) available on origin/{UPDATE_BRANCH}. "
+              f"Run ./scripts/update.sh to apply.", 'info')
+    else:
+        flash('Already up to date.', 'success')
+    return redirect(url_for('app_settings'))
+
+
 @app.route('/app-settings', methods=['GET', 'POST'])
 def app_settings():
     if request.method == 'POST':
@@ -1192,7 +1271,8 @@ def app_settings():
         'name_width': request.cookies.get('name_width', '150px'),
         'histogram_width': request.cookies.get('histogram_width', '150px')
     }
-    return render_template('app_settings.html', settings=settings)
+    return render_template('app_settings.html', settings=settings,
+                           update_status=get_update_status())
 
 @app.route('/<project_name>/settings', methods=['GET', 'POST'])
 def settings_page(project_name):
