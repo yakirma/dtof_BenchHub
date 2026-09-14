@@ -203,7 +203,7 @@ def get_distinguishable_metric_name(lm):
 
 
 app = Flask(__name__)
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 app.secret_key = 'supersecretkey' # Needed for session management
 # basedir = os.path.abspath(os.path.dirname(__file__)) # No longer used for data
 user_home = os.path.expanduser("~")
