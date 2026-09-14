@@ -1385,9 +1385,18 @@ exec honcho start
     with open(script_path, 'w') as fh:
         fh.write(script)
     os.chmod(script_path, 0o755)
+    # Strip werkzeug's reloader handshake from the inherited environment. This
+    # process IS the reloader child under debug=True, so it carries
+    # WERKZEUG_RUN_MAIN=true and WERKZEUG_SERVER_FD=<fd of the listening socket>.
+    # Inherited by the restarter -> honcho -> the new run.py, they make werkzeug
+    # believe it is a reloader child and adopt that fd, which does not exist in
+    # the new process: "OSError: [Errno 9] Bad file descriptor", and the whole
+    # stack exits immediately after starting.
+    child_env = {k: v for k, v in os.environ.items()
+                 if k not in ('WERKZEUG_RUN_MAIN', 'WERKZEUG_SERVER_FD')}
     subprocess.Popen(['/bin/sh', script_path], start_new_session=True,
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, cwd=APP_REPO_DIR)
+                     stderr=subprocess.DEVNULL, cwd=APP_REPO_DIR, env=child_env)
     return log_path
 
 
