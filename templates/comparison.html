@@ -1251,6 +1251,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 <input class="form-check-input sp-agg-line" type="checkbox" checked>
                 <label class="form-check-label small">Connect aggregated points with a line (Mean/Std)</label>
             </div>
+            <div class="form-check">
+                <input class="form-check-input sp-agg-dodge" type="checkbox" checked>
+                <label class="form-check-label small">Offset each series side by side at each X (Mean/Std)</label>
+            </div>
         </div>
 
         <div class="mb-2 sp-yo-opacity-col" style="display:none;">
@@ -4037,6 +4041,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 const showBoxPoints = q('.sp-box-points') && q('.sp-box-points').checked;
                 const showErrBars = q('.sp-err-bars') && q('.sp-err-bars').checked;
                 const showAggLine = !q('.sp-agg-line') || q('.sp-agg-line').checked;
+                const dodgeSeries = !q('.sp-agg-dodge') || q('.sp-agg-dodge').checked;
                 const isAgg = (type === 'mean' || type === 'std');
                 const sampleTags = SP.sample_tags || {};
 
@@ -4082,6 +4087,27 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 const yLblAgg = isAgg ? (type + '(' + yLblAuto + ')') : yLblAuto;
                 const yLbl = axisLabel.y.trim() ? axisLabel.y.trim() : yLblAgg;
 
+                // Mean/Std: nudge each SERIES sideways at every X so submissions sit
+                // next to each other instead of stacking on the same point, the way
+                // grouped box plots tile. Needs the full list of series up front to
+                // know how many slots to divide the band into.
+                const aggSeriesKeys = [];
+                let aggDodgeBand = 0;
+                if (isAgg && dodgeSeries) {
+                    specs.forEach((spec, yIdx) => groupKeys.forEach(g => {
+                        if (seriesMap.get(yIdx + ' ' + g)) aggSeriesKeys.push(yIdx + ' ' + g);
+                    }));
+                    const everyX = new Set();
+                    seriesMap.forEach(s => s.x.forEach(v => everyX.add(v)));
+                    aggDodgeBand = medianSpacing(Array.from(everyX).sort((a, b) => a - b)) * 0.6;
+                }
+                const dodgeFor = (key) => {
+                    const n = aggSeriesKeys.length;
+                    if (n < 2 || !aggDodgeBand) return 0;
+                    const i = aggSeriesKeys.indexOf(key);
+                    return i < 0 ? 0 : ((i / (n - 1)) - 0.5) * aggDodgeBand;
+                };
+
                 const traces = [];
                 specs.forEach((spec, yIdx) => {
                     const yKey = spec.yKey;
@@ -4123,16 +4149,19 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             // click-to-open-sample handler correctly ignores these
                             // points — they represent a bucket, not one sample.
                             const agg = aggregateByX(pts, type);
+                            const dodge = dodgeFor(yIdx + ' ' + g);
                             const aggTrace = {
                                 type: 'scatter',
                                 opacity: opacityVal,
                                 mode: showAggLine ? 'lines+markers' : 'markers',
                                 name: name,
-                                x: agg.xs,
+                                x: agg.xs.map(v => v + dodge),
                                 y: agg.ys,
-                                customdata: agg.ns,
-                                hovertemplate: xLbl + ': %{x}<br>' + type + '(' + yLabel + '): %{y}'
-                                    + '<br>n: %{customdata}<extra>' + name + '</extra>',
+                                // Carries the TRUE x alongside n, so the offset applied
+                                // for readability never shows up in the tooltip.
+                                customdata: agg.xs.map((xv, i) => [agg.ns[i], xv]),
+                                hovertemplate: xLbl + ': %{customdata[1]}<br>' + type + '(' + yLabel + '): %{y}'
+                                    + '<br>n: %{customdata[0]}<extra>' + name + '</extra>',
                                 marker: { symbol: MARKERS[markerIdx % MARKERS.length], color: color, size: 9, line: { width: 0.5, color: '#333' } },
                                 line: { color: color }
                             };
@@ -4146,14 +4175,19 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 // Every underlying sample, laid out side by side within
                                 // its X column. These keep `text`, so unlike the
                                 // aggregate markers they stay clickable.
-                                const spread = spreadPointsByX(pts, medianSpacing(agg.xs) * 0.5);
+                                // Kept inside this series' own slot when the series are
+                                // dodged, so the points stay under their aggregate.
+                                const slot = aggSeriesKeys.length > 1 && aggDodgeBand
+                                    ? (aggDodgeBand / aggSeriesKeys.length) * 0.8
+                                    : medianSpacing(agg.xs) * 0.5;
+                                const spread = spreadPointsByX(pts, slot);
                                 traces.push({
                                     type: 'scatter',
                                     mode: 'markers',
                                     name: name + ' (points)',
                                     showlegend: false,
                                     legendgroup: name,
-                                    x: spread.x,
+                                    x: spread.x.map(v => v + dodge),
                                     y: spread.y,
                                     text: spread.text,
                                     customdata: spread.text.map(s => sampleTags[s] || '(none)'),
@@ -4252,6 +4286,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             q('.sp-box-points').addEventListener('change', plot);
             q('.sp-err-bars').addEventListener('change', plot);
             q('.sp-agg-line').addEventListener('change', plot);
+            q('.sp-agg-dodge').addEventListener('change', plot);
             q('.sp-title').addEventListener('change', plot);
             q('.sp-edit-labels').addEventListener('click', () => {
                 const panel = q('.sp-labels-panel');
