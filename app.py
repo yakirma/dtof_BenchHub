@@ -1252,9 +1252,19 @@ def _refresh_update_status_async():
 
     def work():
         try:
-            _UPDATE_STATUS_CACHE['value'] = get_update_status(fetch=True)
-        except Exception:
-            app.logger.debug("Background update check failed", exc_info=True)
+            value = get_update_status(fetch=True)
+            if value.get('error'):
+                # Most often the server process has no credentials for an SSH
+                # remote. Logged loudly, and surfaced in the navbar, because a
+                # silently failing update check looks identical to "up to date".
+                app.logger.warning("Update check failed: %s", value['error'])
+            _UPDATE_STATUS_CACHE['value'] = value
+        except Exception as e:
+            app.logger.warning("Background update check raised: %s", e, exc_info=True)
+            _UPDATE_STATUS_CACHE['value'] = {
+                'repo': APP_REPO_DIR, 'branch': None, 'local': None, 'subject': None,
+                'date': None, 'remote': None, 'behind': 0, 'ahead': 0,
+                'dirty': False, 'error': str(e)}
         finally:
             # Stamped even on failure so an unreachable remote backs off for a
             # full TTL instead of retrying on every request.
