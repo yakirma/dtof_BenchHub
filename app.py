@@ -1230,21 +1230,58 @@ def get_update_status(fetch=False):
 # get_update_status() spawns half a dozen git processes, far too much for the
 # navbar badge that renders on every page. Cache it, and invalidate explicitly
 # whenever we fetch or update so the badge reacts immediately to those.
-_UPDATE_STATUS_CACHE = {'at': 0.0, 'value': None}
+_UPDATE_STATUS_CACHE = {'at': 0.0, 'value': None, 'refreshing': False}
 UPDATE_STATUS_TTL = 300
+
+
+def _refresh_update_status_async():
+    """
+    Refresh the cached status in the background, WITH a fetch.
+
+    The fetch is the whole point: `behind` is measured against the LOCAL
+    origin/main ref, which only `git fetch` moves. Without one a checkout reports
+    "up to date" purely because its copy of the remote ref is stale — the same
+    reason `git status` keeps saying that until you fetch or pull.
+
+    It runs off-request because a fetch is a network round trip: blocking a page
+    render on it would slow every page, and would hang for the full fetch timeout
+    whenever the remote is unreachable.
+    """
+    if _UPDATE_STATUS_CACHE['refreshing']:
+        return
+
+    def work():
+        try:
+            _UPDATE_STATUS_CACHE['value'] = get_update_status(fetch=True)
+        except Exception:
+            app.logger.debug("Background update check failed", exc_info=True)
+        finally:
+            # Stamped even on failure so an unreachable remote backs off for a
+            # full TTL instead of retrying on every request.
+            _UPDATE_STATUS_CACHE['at'] = time.time()
+            _UPDATE_STATUS_CACHE['refreshing'] = False
+
+    _UPDATE_STATUS_CACHE['refreshing'] = True
+    threading.Thread(target=work, daemon=True).start()
 
 
 def get_cached_update_status(max_age=UPDATE_STATUS_TTL):
     now = time.time()
-    if _UPDATE_STATUS_CACHE['value'] is None or (now - _UPDATE_STATUS_CACHE['at']) > max_age:
-        _UPDATE_STATUS_CACHE['value'] = get_update_status(fetch=False)
-        _UPDATE_STATUS_CACHE['at'] = now
+    stale = (_UPDATE_STATUS_CACHE['value'] is None
+             or (now - _UPDATE_STATUS_CACHE['at']) > max_age)
+    if stale:
+        _refresh_update_status_async()
+        if _UPDATE_STATUS_CACHE['value'] is None:
+            # Nothing cached yet: answer from local refs so the navbar has
+            # something immediately. The background fetch lands a moment later.
+            return get_update_status(fetch=False)
     return _UPDATE_STATUS_CACHE['value']
 
 
 def invalidate_update_status():
     _UPDATE_STATUS_CACHE['value'] = None
     _UPDATE_STATUS_CACHE['at'] = 0.0
+    _UPDATE_STATUS_CACHE['refreshing'] = False
 
 
 @app.context_processor
