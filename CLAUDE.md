@@ -62,7 +62,9 @@ For environments that block uploading Python source: the metric/visualization ed
 
 `scripts/update.sh` fast-forwards the checkout to `origin/main`, runs `migrate_db.py`, and restarts the honcho stack. It refuses to act unless the checkout is clean, on `main`, and strictly behind the remote, so it can never discard local work. `./scripts/update.sh --check` reports status without changing anything.
 
-Applying an update is intentionally **not** reachable over HTTP. The app has no authentication, so an endpoint that pulls and executes new code would let anyone who can reach port 6060 deploy to it. The settings page only *reports* status (`get_update_status()`, read-only git queries) and offers a fetch-only "Check for updates" button.
+The same is available in-app: **General Settings -> Version & Updates** has an "Update & restart" button (`POST /app-settings/update`), and the navbar shows an "N behind" badge on every page, fed by a 5-minute-cached `get_cached_update_status()` (uncached it would spawn ~6 git processes per request; `invalidate_update_status()` clears it after a check or update).
+
+> **Security:** `update_application()` pulls code and restarts the stack, and this app has **no authentication**. Anyone who can reach port 6060 can deploy to the host, and there is no CSRF protection. This is enabled deliberately for trusted internal deployments — set `BENCHHUB_UPDATE_ENABLED=0` before exposing the app to any network you do not control. The endpoint refuses to act unless the checkout is clean, on `main`, and strictly behind the remote; those guards protect the checkout, not access.
 
 ## Conventions worth knowing
 

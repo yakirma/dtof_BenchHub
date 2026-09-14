@@ -37,6 +37,8 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from metric_engine import evaluate_dynamic_metric, get_metric_context
 import subprocess
+import shlex
+import time
 
 # Import local configuration (optional, with fallback)
 try:
@@ -1154,17 +1156,23 @@ def inject_settings():
     }
     return {'global_settings': settings_dict}
 
-# --- Version / update status (read-only) -------------------------------------
-# Reports how the running checkout compares to origin/main. Applying an update is
-# deliberately NOT exposed over HTTP: this app has no authentication, so an
-# endpoint that pulls and runs new code would let anyone who can reach the port
-# deploy to it. Use scripts/update.sh from a shell instead.
+# --- Version / update ---------------------------------------------------------
+# Reports how the running checkout compares to origin/main, and can fast-forward
+# to it and restart the stack.
+#
+# SECURITY: update_application() pulls code and restarts the app, and this
+# application has NO AUTHENTICATION. Anyone who can reach this port can therefore
+# deploy to this machine (limited to whatever is on origin/main, and there is no
+# CSRF protection either). This is enabled by design for trusted/internal
+# deployments. Set BENCHHUB_UPDATE_ENABLED=0 to turn the endpoint off, and do so
+# before exposing this app to any network you do not control.
 APP_REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 UPDATE_BRANCH = 'main'
+UPDATE_ENABLED = os.environ.get('BENCHHUB_UPDATE_ENABLED', '1') not in ('0', 'false', 'False', 'no')
 
 
 def _run_git(*args, timeout=60):
-    """Run a read-only git command against the app's own checkout."""
+    """Run a git command against the app's own checkout."""
     try:
         res = subprocess.run(['git', '-C', APP_REPO_DIR, *args],
                              capture_output=True, text=True, timeout=timeout)
@@ -1219,9 +1227,39 @@ def get_update_status(fetch=False):
     return status
 
 
+# get_update_status() spawns half a dozen git processes, far too much for the
+# navbar badge that renders on every page. Cache it, and invalidate explicitly
+# whenever we fetch or update so the badge reacts immediately to those.
+_UPDATE_STATUS_CACHE = {'at': 0.0, 'value': None}
+UPDATE_STATUS_TTL = 300
+
+
+def get_cached_update_status(max_age=UPDATE_STATUS_TTL):
+    now = time.time()
+    if _UPDATE_STATUS_CACHE['value'] is None or (now - _UPDATE_STATUS_CACHE['at']) > max_age:
+        _UPDATE_STATUS_CACHE['value'] = get_update_status(fetch=False)
+        _UPDATE_STATUS_CACHE['at'] = now
+    return _UPDATE_STATUS_CACHE['value']
+
+
+def invalidate_update_status():
+    _UPDATE_STATUS_CACHE['value'] = None
+    _UPDATE_STATUS_CACHE['at'] = 0.0
+
+
+@app.context_processor
+def inject_update_status():
+    """Makes `update_banner` available to every template (navbar badge)."""
+    try:
+        return {'update_banner': get_cached_update_status()}
+    except Exception:
+        return {'update_banner': None}
+
+
 @app.route('/app-settings/check-updates', methods=['POST'])
 def check_for_updates():
     """Refresh remote refs and report. Fetch only — nothing is merged or run."""
+    invalidate_update_status()
     status = get_update_status(fetch=True)
     if status['error']:
         flash(status['error'], 'danger')
@@ -1230,6 +1268,106 @@ def check_for_updates():
               f"Run ./scripts/update.sh to apply.", 'info')
     else:
         flash('Already up to date.', 'success')
+    return redirect(url_for('app_settings'))
+
+
+def honcho_is_running():
+    try:
+        res = subprocess.run(['pgrep', '-f', 'honcho start'],
+                             capture_output=True, text=True, timeout=10)
+        return res.returncode == 0 and bool(res.stdout.strip())
+    except Exception:
+        return False
+
+
+def schedule_stack_restart(delay=2):
+    """
+    Restart the honcho stack from a detached process.
+
+    The commands go into a script FILE rather than `sh -c "..."` on purpose: with
+    -c, the restarter's own command line would contain the string "honcho start"
+    and the pkill below would match it, killing the restarter along with the
+    stack. start_new_session detaches it so it outlives the process being killed.
+    """
+    log_path = os.path.join(dtof_data_dir, 'restart.log')
+    script_path = os.path.join(dtof_data_dir, 'restart_stack.sh')
+    script = (
+        "#!/bin/sh\n"
+        f"sleep {int(delay)}\n"
+        "pkill -f 'honcho start' >/dev/null 2>&1\n"
+        "sleep 1\n"
+        f"cd {shlex.quote(APP_REPO_DIR)} || exit 1\n"
+        f"exec nohup honcho start >> {shlex.quote(log_path)} 2>&1\n"
+    )
+    with open(script_path, 'w') as fh:
+        fh.write(script)
+    os.chmod(script_path, 0o755)
+    subprocess.Popen(['/bin/sh', script_path], start_new_session=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, cwd=APP_REPO_DIR)
+    return log_path
+
+
+@app.route('/app-settings/update', methods=['POST'])
+def update_application():
+    """
+    Fast-forward the checkout to origin/main, migrate, and restart the stack.
+
+    POST-only so a plain link or image cannot trigger a deploy. The refusals
+    below protect the checkout, not access: they exist so an update can never
+    discard uncommitted work, drop unpushed commits, or move you off a branch
+    you are working on.
+    """
+    if not UPDATE_ENABLED:
+        flash('In-app updates are disabled (BENCHHUB_UPDATE_ENABLED=0).', 'warning')
+        return redirect(url_for('app_settings'))
+
+    invalidate_update_status()
+    status = get_update_status(fetch=True)
+    if status['error']:
+        flash(status['error'], 'danger')
+        return redirect(url_for('app_settings'))
+    if status['branch'] != UPDATE_BRANCH:
+        flash(f"Refusing to update: checked out on '{status['branch']}', not '{UPDATE_BRANCH}'.", 'danger')
+        return redirect(url_for('app_settings'))
+    if status['dirty']:
+        flash('Refusing to update: the checkout has uncommitted changes.', 'danger')
+        return redirect(url_for('app_settings'))
+    if status['ahead']:
+        flash(f"Refusing to update: {status['ahead']} local commit(s) are not on "
+              f"origin/{UPDATE_BRANCH}.", 'danger')
+        return redirect(url_for('app_settings'))
+    if not status['behind']:
+        flash('Already up to date — nothing to pull.', 'info')
+        return redirect(url_for('app_settings'))
+
+    before = status['local']
+    app.logger.warning("In-app update requested by %s: %s -> origin/%s (%d commits)",
+                       request.remote_addr, before, UPDATE_BRANCH, status['behind'])
+
+    ok, out, err = _run_git('merge', '--ff-only', f'origin/{UPDATE_BRANCH}', timeout=120)
+    if not ok:
+        flash(f'Update failed, nothing changed: {err or out}', 'danger')
+        return redirect(url_for('app_settings'))
+
+    after = get_update_status()['local']
+
+    # Schema first: restarting against a stale schema is worse than not restarting.
+    try:
+        check_and_migrate_db()
+    except Exception as e:
+        app.logger.exception("Migration failed after update")
+        flash(f'Updated {before} -> {after}, but migration failed: {e}. '
+              'The stack was NOT restarted.', 'danger')
+        return redirect(url_for('app_settings'))
+
+    if honcho_is_running():
+        log_path = schedule_stack_restart()
+        flash(f'Updated {before} -> {after}. Restarting the stack — reload this page in a '
+              f'few seconds. Restart output: {log_path}', 'success')
+    else:
+        flash(f'Updated {before} -> {after}. honcho is not running here, so restart the '
+              'app yourself to load the new code.', 'warning')
     return redirect(url_for('app_settings'))
 
 

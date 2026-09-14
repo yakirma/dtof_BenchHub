@@ -136,19 +136,32 @@
                 {% endif %}
 
                 <p class="small text-muted mb-2">
-                    Updating pulls new code and restarts the stack, so it runs from a shell rather than
-                    from this page — this app has no login, and anyone who can reach it could otherwise
-                    deploy to it. On the machine running BenchHub:
+                    Updating fast-forwards to <code>origin/main</code>, applies schema migrations and
+                    restarts the honcho stack. The same thing from a shell:
+                    <code>cd {{ update_status.repo }} &amp;&amp; ./scripts/update.sh</code>
                 </p>
-                <pre class="bg-body-tertiary border rounded p-2 small mb-3">cd {{ update_status.repo }}
-./scripts/update.sh</pre>
 
-                <form method="POST" action="{{ url_for('check_for_updates') }}">
-                    <button type="submit" class="btn btn-sm btn-outline-primary">
-                        <i class="bi bi-cloud-arrow-down me-1"></i>Check for updates
-                    </button>
-                    <span class="form-text ms-2">Refreshes from origin. Nothing is installed or restarted.</span>
-                </form>
+                <div class="d-flex gap-2 align-items-center flex-wrap">
+                    <form method="POST" action="{{ url_for('update_application') }}" class="mb-0"
+                        onsubmit="return confirm('Pull origin/main and restart BenchHub now?\n\nThe app will be unavailable for a few seconds.');">
+                        <button type="submit" class="btn btn-sm btn-primary"
+                            {% if not update_status.behind or update_status.dirty or update_status.ahead
+                                  or (update_status.branch and update_status.branch != 'main') %}disabled{% endif %}>
+                            <i class="bi bi-download me-1"></i>Update &amp; restart
+                        </button>
+                    </form>
+
+                    <form method="POST" action="{{ url_for('check_for_updates') }}" class="mb-0">
+                        <button type="submit" class="btn btn-sm btn-outline-primary">
+                            <i class="bi bi-cloud-arrow-down me-1"></i>Check for updates
+                        </button>
+                    </form>
+
+                    <span class="form-text ms-1">
+                        {% if update_status.behind %}{{ update_status.behind }} commit(s) will be applied.
+                        {% else %}Check refreshes from origin; nothing is installed or restarted.{% endif %}
+                    </span>
+                </div>
             </div>
         </div>
     </div>

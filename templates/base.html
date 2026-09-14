@@ -266,9 +266,24 @@
                             href="{{ url_for('docs') }}">
                             <i class="bi bi-book me-1"></i> Docs
                         </a>
+                        {% if update_banner and update_banner.behind %}
+                        <a href="{{ url_for('app_settings') }}"
+                            class="btn btn-sm btn-warning d-flex align-items-center ms-2"
+                            title="{{ update_banner.behind }} new commit(s) on origin/main (running {{ update_banner.local }}). Click to update.">
+                            <i class="bi bi-arrow-down-circle me-1"></i>
+                            {{ update_banner.behind }} behind
+                        </a>
+                        {% elif update_banner and update_banner.dirty %}
+                        <a href="{{ url_for('app_settings') }}"
+                            class="nav-link text-warning ms-2 d-flex align-items-center"
+                            title="Running {{ update_banner.local }} with uncommitted local changes">
+                            <i class="bi bi-exclamation-triangle me-1"></i>
+                            <span class="small">modified</span>
+                        </a>
+                        {% endif %}
                         <a href="{{ url_for('app_settings') }}"
                             class="nav-link text-secondary ms-2 {{ 'active' if request.endpoint == 'app_settings' }}"
-                            title="General Settings">
+                            title="General Settings{% if update_banner and update_banner.local %} — running {{ update_banner.local }}{% endif %}">
                             <i class="bi bi-gear fs-4"></i>
                         </a>
                     </div>
