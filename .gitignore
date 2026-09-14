@@ -1,0 +1,34 @@
+# --- Python ---
+*.pyc
+__pycache__
+
+# --- Machine-specific config (see CLAUDE.md) ---
+local_config.py
+
+# --- Runtime state / data (lives in ~/.dtofbenchmarking, never in the repo) ---
+*.db
+*.rdb
+*.rdb.*
+data/
+uploads/
+
+# --- Logs ---
+*.log
+debug_log.txt
+server_output.log
+
+# --- Sample/test datasets and submission bundles ---
+*.zip
+dataset_*/
+bulk_submissions*/
+
+# --- Stale backups (kept on disk, not worth versioning) ---
+*.bak
+*.bak[0-9]
+comparison_old.html
+
+# --- Editor / tooling ---
+.idea/
+.vscode/
+.DS_Store
+.codex/

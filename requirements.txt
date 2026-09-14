@@ -1,0 +1,7 @@
+Flask
+Flask-SQLAlchemy
+celery
+redis
+numpy
+scipy
+honcho
