@@ -1230,6 +1230,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         <option value="scatter">Scatter</option>
                         <option value="line">Line</option>
                         <option value="box">Box (group by X value)</option>
+                        <option value="mean">Mean (group by X value)</option>
+                        <option value="std">Std (group by X value)</option>
                     </select>
                 </div>
                 <div>
@@ -1240,6 +1242,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             <div class="form-check mt-2">
                 <input class="form-check-input sp-box-points" type="checkbox">
                 <label class="form-check-label small">Overlay individual points (box plots)</label>
+            </div>
+            <div class="form-check">
+                <input class="form-check-input sp-err-bars" type="checkbox" checked>
+                <label class="form-check-label small">Error bars &plusmn;1 std (Mean plots)</label>
             </div>
         </div>
 
@@ -3429,6 +3435,29 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             const margin = (hi - lo) * 0.05;
             return [lo - margin, hi + margin];
         }
+        // Collapse every point sharing an X value into one aggregate, for the
+        // "Mean"/"Std" chart types. Population std (÷n), matching numpy's default
+        // so the figure agrees with the aggregates computed server-side.
+        function aggregateByX(pts, kind) {
+            const byX = new Map();
+            pts.forEach(p => {
+                let bucket = byX.get(p.x);
+                if (!bucket) { bucket = []; byX.set(p.x, bucket); }
+                bucket.push(p.y);
+            });
+            const xs = Array.from(byX.keys()).sort((a, b) => a - b);
+            const ys = [], sds = [], ns = [];
+            xs.forEach(x => {
+                const v = byX.get(x);
+                const n = v.length;
+                const mean = v.reduce((s, y) => s + y, 0) / n;
+                const sd = Math.sqrt(v.reduce((s, y) => s + (y - mean) * (y - mean), 0) / n);
+                ys.push(kind === 'std' ? sd : mean);
+                sds.push(sd);
+                ns.push(n);
+            });
+            return { xs: xs, ys: ys, sds: sds, ns: ns };
+        }
         function csvCell(v) { v = (v == null ? '' : String(v)); return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
         function downloadBlob(text, name, type) {
             const blob = new Blob([text], { type: type + ';charset=utf-8' });
@@ -3948,6 +3977,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 const multiY = yKeys.length > 1;
                 const showTags = q('.sp-show-tags').checked;
                 const showBoxPoints = q('.sp-box-points') && q('.sp-box-points').checked;
+                const showErrBars = q('.sp-err-bars') && q('.sp-err-bars').checked;
+                const isAgg = (type === 'mean' || type === 'std');
                 const sampleTags = SP.sample_tags || {};
 
                 const seriesMap = new Map();
@@ -3988,7 +4019,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     ? Array.from(new Set(yKeys.map(labelFor))).join(', ')
                     : labelFor(yKeys[0]);
                 const yLblAuto = (yFnText && yFnText.trim() && yFnText.trim() !== 'x') ? (yFnText.trim() + '  [' + yLblBase + ']') : yLblBase;
-                const yLbl = axisLabel.y.trim() ? axisLabel.y.trim() : yLblAuto;
+                const yLblAgg = isAgg ? (type + '(' + yLblAuto + ')') : yLblAuto;
+                const yLbl = axisLabel.y.trim() ? axisLabel.y.trim() : yLblAgg;
 
                 const traces = [];
                 yKeys.forEach((yKey, yIdx) => {
@@ -3997,7 +4029,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         const s2 = seriesMap.get(yKey + ' ' + g);
                         if (!s2) return;
                         let pts = s2.x.map((x, idx2) => ({ x: x, y: s2.y[idx2], t: s2.text[idx2] }));
-                        if (type === 'line') pts.sort((a, b) => a.x - b.x);
+                        if (type === 'line' || isAgg) pts.sort((a, b) => a.x - b.x);
                         let colorIdx, markerIdx, name;
                         if (gKey && multiY) { colorIdx = yIdx; markerIdx = gIdx; name = qualifiedLabel(yKey) + ' — ' + g; }
                         else if (gKey) { colorIdx = gIdx; markerIdx = gIdx; name = String(g); }
@@ -4024,6 +4056,32 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 pointpos: 0,
                                 hoverlabel: { namelength: -1 }
                             });
+                        } else if (isAgg) {
+                            // One marker per distinct X value: the mean (or std) of
+                            // every Y sharing it. No `text` is set, so the
+                            // click-to-open-sample handler correctly ignores these
+                            // points — they represent a bucket, not one sample.
+                            const agg = aggregateByX(pts, type);
+                            const aggTrace = {
+                                type: 'scatter',
+                                opacity: opacityVal,
+                                mode: 'lines+markers',
+                                name: name,
+                                x: agg.xs,
+                                y: agg.ys,
+                                customdata: agg.ns,
+                                hovertemplate: xLbl + ': %{x}<br>' + type + '(' + yLabel + '): %{y}'
+                                    + '<br>n: %{customdata}<extra>' + name + '</extra>',
+                                marker: { symbol: MARKERS[markerIdx % MARKERS.length], color: color, size: 9, line: { width: 0.5, color: '#333' } },
+                                line: { color: color }
+                            };
+                            if (type === 'mean' && showErrBars) {
+                                aggTrace.error_y = {
+                                    type: 'data', array: agg.sds, visible: true,
+                                    color: color, thickness: 1.2, width: 4
+                                };
+                            }
+                            traces.push(aggTrace);
                         } else {
                             const hover = '%{text}<br>' + xLbl + ': %{x}<br>' + yLabel + ': %{y}'
                                 + (showTags ? '<br>tags: %{customdata}' : '')
@@ -4109,6 +4167,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             q('.sp-add-filter').addEventListener('click', addFilterRow);
             q('.sp-show-tags').addEventListener('change', plot);
             q('.sp-box-points').addEventListener('change', plot);
+            q('.sp-err-bars').addEventListener('change', plot);
             q('.sp-title').addEventListener('change', plot);
             q('.sp-edit-labels').addEventListener('click', () => {
                 const panel = q('.sp-labels-panel');
