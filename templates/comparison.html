@@ -1241,7 +1241,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             </div>
             <div class="form-check mt-2">
                 <input class="form-check-input sp-box-points" type="checkbox">
-                <label class="form-check-label small">Overlay individual points (box, mean, std)</label>
+                <label class="form-check-label small">Overlay individual points (box plots)</label>
             </div>
             <div class="form-check">
                 <input class="form-check-input sp-err-bars" type="checkbox" checked>
@@ -3475,27 +3475,6 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             gaps.sort((a, b) => a - b);
             return gaps[Math.floor(gaps.length / 2)];
         }
-        // Lay the points sharing an X value out side by side across `width`,
-        // evenly and deterministically — random jitter would reshuffle them on
-        // every re-plot.
-        function spreadPointsByX(pts, width) {
-            const byX = new Map();
-            pts.forEach(p => {
-                let bucket = byX.get(p.x);
-                if (!bucket) { bucket = []; byX.set(p.x, bucket); }
-                bucket.push(p);
-            });
-            const x = [], y = [], text = [];
-            byX.forEach((bucket, xv) => {
-                const n = bucket.length;
-                bucket.forEach((p, i) => {
-                    x.push(n > 1 ? xv + ((i / (n - 1)) - 0.5) * width : xv);
-                    y.push(p.y);
-                    text.push(p.t);
-                });
-            });
-            return { x: x, y: y, text: text };
-        }
         function csvCell(v) { v = (v == null ? '' : String(v)); return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
         function downloadBlob(text, name, type) {
             const blob = new Blob([text], { type: type + ';charset=utf-8' });
@@ -4099,7 +4078,19 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     }));
                     const everyX = new Set();
                     seriesMap.forEach(s => s.x.forEach(v => everyX.add(v)));
-                    aggDodgeBand = medianSpacing(Array.from(everyX).sort((a, b) => a - b)) * 0.6;
+                    const xsSorted = Array.from(everyX).sort((a, b) => a - b);
+                    const gap = medianSpacing(xsSorted);
+                    const span = xsSorted.length ? (xsSorted[xsSorted.length - 1] - xsSorted[0]) : 0;
+                    // Scaled off the gap between X values so series stay inside their
+                    // own column when X is categorical (few values, wide gaps) — but
+                    // floored at a share of the axis span, because with near-continuous
+                    // X the median gap is a fraction of a percent of the range and the
+                    // offset would be a pixel or two, i.e. invisible.
+                    aggDodgeBand = Math.max(gap * 0.6, span * 0.03);
+                    if (!aggDodgeBand) {
+                        // Every series on one X value: nothing to scale against.
+                        aggDodgeBand = Math.abs(xsSorted[0] || 0) * 0.02 || 1;
+                    }
                 }
                 const dodgeFor = (key) => {
                     const n = aggSeriesKeys.length;
@@ -4170,33 +4161,6 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     type: 'data', array: agg.sds, visible: true,
                                     color: color, thickness: 1.2, width: 4
                                 };
-                            }
-                            if (showBoxPoints) {
-                                // Every underlying sample, laid out side by side within
-                                // its X column. These keep `text`, so unlike the
-                                // aggregate markers they stay clickable.
-                                // Kept inside this series' own slot when the series are
-                                // dodged, so the points stay under their aggregate.
-                                const slot = aggSeriesKeys.length > 1 && aggDodgeBand
-                                    ? (aggDodgeBand / aggSeriesKeys.length) * 0.8
-                                    : medianSpacing(agg.xs) * 0.5;
-                                const spread = spreadPointsByX(pts, slot);
-                                traces.push({
-                                    type: 'scatter',
-                                    mode: 'markers',
-                                    name: name + ' (points)',
-                                    showlegend: false,
-                                    legendgroup: name,
-                                    x: spread.x.map(v => v + dodge),
-                                    y: spread.y,
-                                    text: spread.text,
-                                    customdata: spread.text.map(s => sampleTags[s] || '(none)'),
-                                    hovertemplate: '%{text}<br>' + yLabel + ': %{y}'
-                                        + (showTags ? '<br>tags: %{customdata}' : '')
-                                        + '<br><span style="font-size:10px">click to open sample ↗</span>'
-                                        + '<extra>' + name + '</extra>',
-                                    marker: { color: color, size: 5, opacity: 0.45, line: { width: 0 } }
-                                });
                             }
                             traces.push(aggTrace);
                         } else {
