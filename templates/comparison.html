@@ -1241,11 +1241,15 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             </div>
             <div class="form-check mt-2">
                 <input class="form-check-input sp-box-points" type="checkbox">
-                <label class="form-check-label small">Overlay individual points (box plots)</label>
+                <label class="form-check-label small">Overlay individual points (box, mean, std)</label>
             </div>
             <div class="form-check">
                 <input class="form-check-input sp-err-bars" type="checkbox" checked>
                 <label class="form-check-label small">Error bars &plusmn;1 std (Mean plots)</label>
+            </div>
+            <div class="form-check">
+                <input class="form-check-input sp-agg-line" type="checkbox" checked>
+                <label class="form-check-label small">Connect aggregated points with a line (Mean/Std)</label>
             </div>
         </div>
 
@@ -3458,6 +3462,36 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             });
             return { xs: xs, ys: ys, sds: sds, ns: ns };
         }
+        // Median gap between consecutive X values, used to size the band that the
+        // individual points are spread across so they stay inside "their" column.
+        function medianSpacing(xs) {
+            if (xs.length < 2) return 0;
+            const gaps = [];
+            for (let i = 1; i < xs.length; i++) gaps.push(Math.abs(xs[i] - xs[i - 1]));
+            gaps.sort((a, b) => a - b);
+            return gaps[Math.floor(gaps.length / 2)];
+        }
+        // Lay the points sharing an X value out side by side across `width`,
+        // evenly and deterministically — random jitter would reshuffle them on
+        // every re-plot.
+        function spreadPointsByX(pts, width) {
+            const byX = new Map();
+            pts.forEach(p => {
+                let bucket = byX.get(p.x);
+                if (!bucket) { bucket = []; byX.set(p.x, bucket); }
+                bucket.push(p);
+            });
+            const x = [], y = [], text = [];
+            byX.forEach((bucket, xv) => {
+                const n = bucket.length;
+                bucket.forEach((p, i) => {
+                    x.push(n > 1 ? xv + ((i / (n - 1)) - 0.5) * width : xv);
+                    y.push(p.y);
+                    text.push(p.t);
+                });
+            });
+            return { x: x, y: y, text: text };
+        }
         function csvCell(v) { v = (v == null ? '' : String(v)); return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
         function downloadBlob(text, name, type) {
             const blob = new Blob([text], { type: type + ';charset=utf-8' });
@@ -4002,6 +4036,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 const showTags = q('.sp-show-tags').checked;
                 const showBoxPoints = q('.sp-box-points') && q('.sp-box-points').checked;
                 const showErrBars = q('.sp-err-bars') && q('.sp-err-bars').checked;
+                const showAggLine = !q('.sp-agg-line') || q('.sp-agg-line').checked;
                 const isAgg = (type === 'mean' || type === 'std');
                 const sampleTags = SP.sample_tags || {};
 
@@ -4091,7 +4126,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             const aggTrace = {
                                 type: 'scatter',
                                 opacity: opacityVal,
-                                mode: 'lines+markers',
+                                mode: showAggLine ? 'lines+markers' : 'markers',
                                 name: name,
                                 x: agg.xs,
                                 y: agg.ys,
@@ -4106,6 +4141,28 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     type: 'data', array: agg.sds, visible: true,
                                     color: color, thickness: 1.2, width: 4
                                 };
+                            }
+                            if (showBoxPoints) {
+                                // Every underlying sample, laid out side by side within
+                                // its X column. These keep `text`, so unlike the
+                                // aggregate markers they stay clickable.
+                                const spread = spreadPointsByX(pts, medianSpacing(agg.xs) * 0.5);
+                                traces.push({
+                                    type: 'scatter',
+                                    mode: 'markers',
+                                    name: name + ' (points)',
+                                    showlegend: false,
+                                    legendgroup: name,
+                                    x: spread.x,
+                                    y: spread.y,
+                                    text: spread.text,
+                                    customdata: spread.text.map(s => sampleTags[s] || '(none)'),
+                                    hovertemplate: '%{text}<br>' + yLabel + ': %{y}'
+                                        + (showTags ? '<br>tags: %{customdata}' : '')
+                                        + '<br><span style="font-size:10px">click to open sample ↗</span>'
+                                        + '<extra>' + name + '</extra>',
+                                    marker: { color: color, size: 5, opacity: 0.45, line: { width: 0 } }
+                                });
                             }
                             traces.push(aggTrace);
                         } else {
@@ -4194,6 +4251,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             q('.sp-show-tags').addEventListener('change', plot);
             q('.sp-box-points').addEventListener('change', plot);
             q('.sp-err-bars').addEventListener('change', plot);
+            q('.sp-agg-line').addEventListener('change', plot);
             q('.sp-title').addEventListener('change', plot);
             q('.sp-edit-labels').addEventListener('click', () => {
                 const panel = q('.sp-labels-panel');
