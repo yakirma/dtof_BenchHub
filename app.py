@@ -4543,8 +4543,28 @@ def comparison_scalar_data(project_name, leaderboard_id):
 
     # Raw per-sample tag strings, for the optional "show tags on hover" overlay.
     sample_tags = {s.name: (s.tags or '') for s in samples}
+
+    # Submission tags, so the plot can cluster several submissions into one series.
+    # "key=value" tags are split out so the UI can offer the key and group by the
+    # value; the raw names are kept for clustering on a bare tag.
+    submission_meta = {}
+    for sub in submissions:
+        names = [t.name for t in sub.tags]
+        pairs = {}
+        for name in names:
+            if '=' in name:
+                k, v = name.split('=', 1)
+                k, v = k.strip(), v.strip()
+                if k:
+                    pairs[k] = v
+        submission_meta[str(sub.id)] = {
+            'label': sub.name if sub_name_counts[sub.name] == 1 else f"{sub.name} (#{sub.id})",
+            'tags': names,
+            'tag_pairs': pairs,
+        }
+
     return jsonify({'samples': sample_names, 'fields': fields, 'values': values,
-                    'sample_tags': sample_tags})
+                    'sample_tags': sample_tags, 'submissions': submission_meta})
 
 
 @app.route('/<project_name>/comparison/<int:leaderboard_id>')

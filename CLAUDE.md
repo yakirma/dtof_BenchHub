@@ -70,6 +70,10 @@ The same is available in-app: **General Settings -> Version & Updates** has an "
 
 **Edit Leaderboard -> General -> Duplicate Leaderboard** (`POST /<project>/leaderboard/<id>/duplicate`) creates a new board with the same datasets, metrics, visualizations and display settings, and **no submissions**. `next_leaderboard_version_name()` proposes `<base> V<n>`, stripping any existing ` V<n>` so duplicating a duplicate gives V3 rather than "V2 V2", and skipping names already taken in the project. Like the other copy paths it remaps `lm_<id>` tokens in `summary_metrics` / `selected_metrics` / `metric_directions` / `metric_aggregation` to the new metric rows, and drops `gt_source_submission_id` (it names a submission that was not copied).
 
+## Scalar X-Y plot (comparison view)
+
+`comparison_scalar_data` feeds the plot: fields keyed `gt::<name>`, `tag::<key>`, `sub::<id>::<name>`, plus `submissions` (per-submission `label`, `tags`, and `tag_pairs` parsed from `key=value` tags). The front end synthesises "All submissions" virtual fields (`all::<name>`) that expand to one series per submission, usable on X and Y. **Cluster by tag** merges the specs of submissions sharing a tag value into one series with several `members`, pooling their points; each spec carries `members: [{xKey, yKey}]` so the clustered and unclustered paths share one series builder.
+
 ## Conventions worth knowing
 
 - `leaderboard_view` must not touch `sub.custom_fields` or issue per-(metric, submission) queries — with many submissions that is samples x fields x submissions ORM rows and metrics x submissions round trips. Custom-metric column names come from one `DISTINCT` query, the sample-name filter is derived once, and every custom-metric raw value is fetched in one batched query keyed by `(submission_id, name)`.
