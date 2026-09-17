@@ -3750,6 +3750,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
             function showError(msg) { elErr.textContent = msg; elErr.style.display = 'block'; }
             function clearError() { elErr.style.display = 'none'; }
+            // Abandoning a plot must also wipe the figure. Leaving the previous one
+            // rendered makes it look like the CURRENT settings produced it — switch
+            // Box -> Mean, hit one of these conditions, and you are still staring at
+            // box plots with "Mean" selected.
+            function failPlot(msg) {
+                showError(msg);
+                try { Plotly.purge(plotDiv); } catch (e) { }
+            }
 
             function applyAliasesToSelects() {
                 [selX, selG].forEach(sel => {
@@ -4024,12 +4032,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 if (!SP) return;
                 const xKey = selX.value, gKey = selG.value, type = selType.value;
                 const yKeys = getSelectedYKeys();
-                if (!xKey || !yKeys.length) { showError('Pick an X and at least one Y field.'); return; }
+                if (!xKey || !yKeys.length) { failPlot('Pick an X and at least one Y field.'); return; }
                 const xFnText = q('.sp-x-fn').value;
                 const yFnText = q('.sp-y-fn').value;
                 const gFnText = q('.sp-group-fn').value;
                 const fx = makeFn(xFnText), fy = makeFn(yFnText), fg = makeFn(gFnText);
-                if (!fx || !fy || !fg) { showError('Invalid function expression.'); return; }
+                if (!fx || !fy || !fg) { failPlot('Invalid function expression.'); return; }
                 clearError();
 
                 const gv = gKey ? (SP.values[gKey] || {}) : null;
@@ -4058,7 +4066,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         });
                     }
                 });
-                if (!specs.length) { showError('No submission provides that X field for the selected Y.'); return; }
+                if (!specs.length) { failPlot('No submission provides that X field for the selected Y.'); return; }
 
                 // Every spec draws one series from one (x, y) pair. Clustering merges
                 // the specs of submissions sharing a tag value into a single spec with
@@ -4265,7 +4273,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     });
                 });
 
-                if (!traces.length) { showError('No samples have values for the selected axes.'); return; }
+                if (!traces.length) { failPlot('No samples have values for the selected axes.'); return; }
 
                 const zoomRaw = parseFloat(q('.sp-zoom-pct').value);
                 const zoomPct = isFinite(zoomRaw) ? Math.min(100, Math.max(0.001, zoomRaw)) : 100;
