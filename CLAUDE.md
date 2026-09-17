@@ -66,6 +66,10 @@ The same is available in-app: **General Settings -> Version & Updates** has an "
 
 > **Security:** `update_application()` pulls code and restarts the stack, and this app has **no authentication**. Anyone who can reach port 6060 can deploy to the host, and there is no CSRF protection. This is enabled deliberately for trusted internal deployments — set `BENCHHUB_UPDATE_ENABLED=0` before exposing the app to any network you do not control. The endpoint refuses to act unless the checkout is clean, on `main`, and strictly behind the remote; those guards protect the checkout, not access.
 
+## Duplicating a leaderboard
+
+**Edit Leaderboard -> General -> Duplicate Leaderboard** (`POST /<project>/leaderboard/<id>/duplicate`) creates a new board with the same datasets, metrics, visualizations and display settings, and **no submissions**. `next_leaderboard_version_name()` proposes `<base> V<n>`, stripping any existing ` V<n>` so duplicating a duplicate gives V3 rather than "V2 V2", and skipping names already taken in the project. Like the other copy paths it remaps `lm_<id>` tokens in `summary_metrics` / `selected_metrics` / `metric_directions` / `metric_aggregation` to the new metric rows, and drops `gt_source_submission_id` (it names a submission that was not copied).
+
 ## Conventions worth knowing
 
 - `leaderboard_view` must not touch `sub.custom_fields` or issue per-(metric, submission) queries — with many submissions that is samples x fields x submissions ORM rows and metrics x submissions round trips. Custom-metric column names come from one `DISTINCT` query, the sample-name filter is derived once, and every custom-metric raw value is fetched in one batched query keyed by `(submission_id, name)`.

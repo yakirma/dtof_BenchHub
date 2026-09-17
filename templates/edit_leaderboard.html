@@ -209,6 +209,30 @@
                         </form>
                     </div>
                 </div>
+
+                <!-- Duplicate Leaderboard Card -->
+                <div class="card mb-4 border-primary shadow-sm">
+                    <div class="card-header bg-primary-subtle text-primary-emphasis">
+                        <h5 class="mb-0"><i class="bi bi-copy me-2"></i>Duplicate Leaderboard</h5>
+                    </div>
+                    <div class="card-body">
+                        <p class="small text-muted">Create a new leaderboard with the same datasets, metrics,
+                            visualizations and display settings. <strong>Submissions are not copied</strong> — the
+                            duplicate starts empty.</p>
+                        <form action="{{ url_for('duplicate_leaderboard', leaderboard_id=leaderboard.id) }}"
+                            method="post">
+                            <div class="mb-3">
+                                <label for="new_name" class="form-label small fw-bold">New Leaderboard Name</label>
+                                <input type="text" class="form-control form-control-sm" id="new_name" name="new_name"
+                                    value="{{ default_duplicate_name }}" required>
+                                <div class="form-text x-small">Must be unique within this project.</div>
+                            </div>
+                            <button type="submit" class="btn btn-primary w-100 fw-bold btn-sm">
+                                <i class="bi bi-copy me-1"></i>Duplicate
+                            </button>
+                        </form>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

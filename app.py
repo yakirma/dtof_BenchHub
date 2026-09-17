@@ -2056,6 +2056,7 @@ def edit_leaderboard(project_name, leaderboard_id):
                            gt_source_fields=gt_source_fields,
                            all_projects=Project.query.all(),
                            all_datasets=Dataset.query.all(),
+                           default_duplicate_name=next_leaderboard_version_name(leaderboard),
                            project_name=project_name)
                            
 
@@ -2254,6 +2255,118 @@ def import_leaderboard_settings(leaderboard_id):
         flash(f"Error importing settings: {e}", "error")
         
     return redirect(url_for('edit_leaderboard', project_name=target_lb.project.name, leaderboard_id=target_lb.id, _anchor=request.form.get('active_tab')))
+
+def next_leaderboard_version_name(lb):
+    """
+    Default name for a duplicate: "<base> V<n>", where <base> drops any trailing
+    " V<n>" so duplicating a duplicate gives V3 rather than "... V2 V2", and <n>
+    is the first version not already taken in the same project.
+    """
+    base = re.sub(r'\s+V\d+$', '', (lb.name or '').strip()) or (lb.name or 'Leaderboard')
+    taken = {other.name for other in
+             Leaderboard.query.filter_by(project_id=lb.project_id).all()}
+    n = 2
+    while f"{base} V{n}" in taken:
+        n += 1
+    return f"{base} V{n}"
+
+
+@app.route('/<project_name>/leaderboard/<int:leaderboard_id>/duplicate', methods=['POST'])
+def duplicate_leaderboard(project_name, leaderboard_id):
+    """
+    Copy a leaderboard's configuration into a new one: same datasets, metrics,
+    visualizations and display settings, but NO submissions — the point is a
+    fresh board to submit against, not a copy of past results.
+    """
+    source_lb = Leaderboard.query.get_or_404(leaderboard_id)
+    new_name = (request.form.get('new_name') or '').strip() or next_leaderboard_version_name(source_lb)
+
+    if Leaderboard.query.filter_by(name=new_name, project_id=source_lb.project_id).first():
+        flash(f'A leaderboard named "{new_name}" already exists in this project.', 'danger')
+        return redirect(url_for('edit_leaderboard', project_name=project_name,
+                                leaderboard_id=source_lb.id, _anchor=request.form.get('active_tab')))
+
+    try:
+        new_lb = Leaderboard(
+            name=new_name,
+            project_id=source_lb.project_id,
+            dataset_id=source_lb.dataset_id,          # legacy single-dataset fallback
+            summary_metrics=source_lb.summary_metrics,
+            comparison_display_columns=source_lb.comparison_display_columns,
+            visualizations=source_lb.visualizations,
+            selected_metrics=source_lb.selected_metrics,
+            metric_directions=source_lb.metric_directions,
+            metric_aggregation=source_lb.metric_aggregation,
+            scalar_width=source_lb.scalar_width,
+            image_width=source_lb.image_width,
+            last_sample_filter=source_lb.last_sample_filter,
+            git_author=get_current_git_author() or ''
+        )
+        # leaderboard_datasets is the authoritative link; dataset_id alone would
+        # reduce a multi-dataset board to its first dataset.
+        new_lb.datasets = list(source_lb.datasets)
+        db.session.add(new_lb)
+        db.session.flush()   # assign new_lb.id
+
+        # Metrics, recording old-id -> new-id so the "lm_<id>" tokens copied above
+        # can be repointed at the new rows. gt_source_submission_id is deliberately
+        # dropped: it names a submission of the source board, and submissions are
+        # not copied, so the duplicate falls back to the dataset's own GT.
+        lm_id_map = {}
+        for src_metric in source_lb.leaderboard_metrics:
+            new_metric = LeaderboardMetric(
+                leaderboard_id=new_lb.id,
+                global_metric_id=src_metric.global_metric_id,
+                arg_mappings=src_metric.arg_mappings,
+                target_name=src_metric.target_name,
+                pooling_type=src_metric.pooling_type,
+                pooling_percentile=src_metric.pooling_percentile,
+                sort_direction=src_metric.sort_direction,
+                tag_filter=src_metric.tag_filter
+            )
+            db.session.add(new_metric)
+            db.session.flush()
+            lm_id_map[src_metric.id] = new_metric.id
+
+        def _remap_lm(text):
+            if not text:
+                return text
+            return re.sub(
+                r'\blm_(\d+)\b',
+                lambda m: (f"lm_{lm_id_map[int(m.group(1))]}"
+                           if int(m.group(1)) in lm_id_map else m.group(0)),
+                text
+            )
+
+        # Without this the copied references point at the SOURCE board's metrics,
+        # and leaderboard_view prunes them as stale — the duplicate's metrics would
+        # be configured but invisible.
+        new_lb.summary_metrics = _remap_lm(new_lb.summary_metrics)
+        new_lb.selected_metrics = _remap_lm(new_lb.selected_metrics)
+        new_lb.metric_directions = _remap_lm(new_lb.metric_directions)
+        new_lb.metric_aggregation = _remap_lm(new_lb.metric_aggregation)
+
+        for src_vis in source_lb.leaderboard_visualizations:
+            db.session.add(LeaderboardVisualization(
+                leaderboard_id=new_lb.id,
+                global_visualization_id=src_vis.global_visualization_id,
+                arg_mappings=src_vis.arg_mappings,
+                target_name=src_vis.target_name,
+                display_order=src_vis.display_order
+            ))
+
+        db.session.commit()
+        flash(f'Leaderboard duplicated as "{new_lb.name}" — '
+              f'{len(lm_id_map)} metric(s), {len(source_lb.leaderboard_visualizations)} visualization(s), '
+              f'{len(new_lb.datasets)} dataset(s). No submissions were copied.', 'success')
+        return redirect(url_for('edit_leaderboard', project_name=project_name, leaderboard_id=new_lb.id))
+
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Error duplicating leaderboard: {e}', 'danger')
+        return redirect(url_for('edit_leaderboard', project_name=project_name,
+                                leaderboard_id=source_lb.id, _anchor=request.form.get('active_tab')))
+
 
 @app.route('/<project_name>/leaderboard/<int:leaderboard_id>/leaderboard_metric/<int:metric_id>/edit', methods=['POST'])
 def edit_leaderboard_metric(project_name, leaderboard_id, metric_id):
