@@ -1213,6 +1213,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     <label class="form-check-label small">Show tags on hover</label>
                 </div>
                 <button class="btn btn-outline-secondary btn-sm mt-1 w-100 sp-edit-labels" type="button"><i class="bi bi-pencil"></i> Labels</button>
+                <button class="btn btn-outline-secondary btn-sm mt-1 w-100 sp-edit-opacity" type="button"
+                    title="Per-series opacity (needs more than one series)"><i class="bi bi-droplet-half"></i> Opacity</button>
                 <button class="btn btn-primary btn-sm mt-1 w-100 sp-plot-btn" type="button"><i class="bi bi-bar-chart-line"></i> Plot</button>
             </div>
         </div>
@@ -1261,7 +1263,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
         <div class="mb-2 sp-yo-opacity-col" style="display:none;">
             <div class="border rounded p-2 bg-body-tertiary">
-                <div class="fw-bold small mb-1">Series opacity <span class="text-muted fw-normal">(per Y field)</span></div>
+                <div class="fw-bold small mb-1">Series opacity
+                    <span class="text-muted fw-normal sp-opacity-scope">(per series)</span></div>
                 <div class="sp-yopacity-list"></div>
             </div>
         </div>
@@ -3625,6 +3628,13 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             // for each one. A cluster is not a field, so it has no entry in SP.fields
             // to hang an alias off — it needs its own synthetic key.
             let clusterRows = [];
+            // Opacity rows live behind their own toggle, like the Labels panel.
+            let opacityPanelOpen = false;
+            // Legend name of a cluster: explicit alias, else one inherited from a
+            // member, else the raw tag value — the same order the traces resolve.
+            function clusterDisplayName(row) {
+                return aliases[row.aliasKey] || row.inherited || row.raw;
+            }
             // Signature of the cluster set the opacity sliders were built for. Dragging
             // a slider re-plots, so the rows must only be rebuilt when the set actually
             // changes — rebuilding every plot would yank the <input> out mid-drag.
@@ -3709,12 +3719,28 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 if (!opCol || !list) return;
                 // While clustering, the drawn series are the clusters — one slider each,
                 // keyed the same way the traces read their opacity. Otherwise it is one
-                // per Y field, as before.
+                // per Y field. Names follow the legend, aliases included, so a row is
+                // recognisable as the curve it controls.
                 const rows = clusterRows.length
-                    ? clusterRows.map(r => ({ key: r.aliasKey, label: r.label }))
-                    : getSelectedYKeys().map(k => ({ key: k, label: labelFor(k) }));
-                if (rows.length < 2) { opCol.style.display = 'none'; list.innerHTML = ''; return; }
-                opCol.style.display = ''; list.innerHTML = '';
+                    ? clusterRows.map(r => ({
+                        key: r.aliasKey,
+                        label: clusterDisplayName(r) + (r.count > 1 ? '  (' + r.count + ')' : '')
+                    }))
+                    : getSelectedYKeys().map(k => ({ key: k, label: qualifiedLabel(k) }));
+                const scope = q('.sp-opacity-scope');
+                if (scope) scope.textContent = clusterRows.length ? '(per cluster)' : '(per Y field)';
+
+                const btn = q('.sp-edit-opacity');
+                if (rows.length < 2) {
+                    // Nothing to balance against with a single series.
+                    opCol.style.display = 'none'; list.innerHTML = '';
+                    if (btn) btn.disabled = true;
+                    return;
+                }
+                if (btn) btn.disabled = false;
+                opCol.style.display = opacityPanelOpen ? '' : 'none';
+                list.innerHTML = '';
+                if (!opacityPanelOpen) return;
                 rows.forEach((entry, i) => {
                     const k = entry.key;
                     // First series defaults to fully opaque; 2nd and beyond to 50%.
@@ -3824,7 +3850,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         const span = document.createElement('span');
                         span.className = 'small text-muted text-truncate';
                         span.style.minWidth = '170px'; span.style.maxWidth = '170px';
-                        span.textContent = row.label; span.title = row.label;
+                        const rowLabel = row.raw + (row.count > 1 ? '  (' + row.count + ' submissions)' : '');
+                        span.textContent = rowLabel; span.title = rowLabel;
                         const inp = document.createElement('input');
                         inp.type = 'text'; inp.className = 'form-control form-control-sm';
                         inp.placeholder = row.inherited ? row.inherited + ' (inherited)' : 'legend alias…';
@@ -4150,8 +4177,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 // an inherited one, which wins over the raw tag value.
                 clusterRows = specs.filter(sp => sp.clusterLabel).map(sp => ({
                     aliasKey: sp.aliasKey,
-                    label: (multiY ? labelFor(sp.yKey) + ' — ' : '') + sp.clusterLabel
-                        + (sp.clusterCount > 1 ? '  (' + sp.clusterCount + ' submissions)' : ''),
+                    // The underlying identity, kept separate from any alias so the
+                    // Labels editor can show what is being renamed.
+                    raw: (multiY ? labelFor(sp.yKey) + ' — ' : '') + sp.clusterLabel,
+                    count: sp.clusterCount || 1,
                     inherited: sp.inheritedAlias || ''
                 }));
 
@@ -4443,6 +4472,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 const show = panel.style.display === 'none';
                 panel.style.display = show ? '' : 'none';
                 if (show) buildLabelsEditor();
+            });
+            q('.sp-edit-opacity').addEventListener('click', () => {
+                opacityPanelOpen = !opacityPanelOpen;
+                buildYOpacity();
             });
             // Header widgets: add another plot, toggle the settings panel.
             q('.sp-add-panel-hdr').addEventListener('click', () => addPanel());
