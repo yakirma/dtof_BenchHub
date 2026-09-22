@@ -613,7 +613,8 @@ def inject_version():
 
 from metric_engine import (evaluate_dynamic_metric, get_metric_context, sort_metrics_by_dependency,
                            build_gt_source_context, apply_gt_source,
-                           MetricContextBuilder, GtSourceContextBuilder, mapped_context_keys)
+                           MetricContextBuilder, GtSourceContextBuilder, mapped_context_keys,
+                           _hist_folders)
 
 
 class MetricGtSourceResolver:
@@ -1908,6 +1909,28 @@ def edit_leaderboard(project_name, leaderboard_id):
         for cf in submission_custom_fields:
             if cf.field_type in ['metric', 'scalar', 'image']:
                 submission_fields_set.add(cf.name)
+
+    # Raw histogram counts are exposed to metrics as gt_hist / sub_hist_<folder>
+    # (see MetricContextBuilder), so the mapping autocomplete has to offer them.
+    # The dataset side is a 'histogram' CustomField named 'hist' — filtered out of
+    # the loop above — or a row in the legacy HistogramData table.
+    has_gt_hist = bool(CustomField.query.filter(
+        CustomField.sample_id.in_([s.id for s in samples]),
+        CustomField.field_type == 'histogram',
+        CustomField.name == 'hist'
+    ).first())
+    if not has_gt_hist and samples:
+        has_gt_hist = bool(HistogramData.query.filter(
+            HistogramData.sample_id.in_([s.id for s in samples])).first())
+    if has_gt_hist:
+        dataset_fields_set.add('hist')          # -> gt_hist
+
+    # The submission side lives on disk, not in CustomField, so scan the folders.
+    for sub in Submission.query.filter_by(leaderboard_id=leaderboard.id).all():
+        sub_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(sub.id))
+        for folder in _hist_folders(sub_dir):
+            submission_fields_set.add(f'hist_{folder}')       # -> sub_hist_<folder>
+            submission_fields_set.add(f'entropy_{folder}')    # -> sub_entropy_<folder>
                 
     # 4. Include already defined Leaderboard Metrics (to allow chaining/dependencies)
     per_sample_metrics = set([])
@@ -2022,8 +2045,10 @@ def edit_leaderboard(project_name, leaderboard_id):
             hist_folders = []
         for f in hist_folders:
             names.add(f'entropy_{f}')
+            names.add(f'hist_{f}')
         if len(hist_folders) == 1:
             names.add('entropy')
+            names.add('hist')
         gt_source_fields[str(sub.id)] = sorted(names)
 
     # Get all global metrics for selection in UI
