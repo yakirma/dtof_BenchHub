@@ -58,8 +58,9 @@ def _unresolved_mapping_hint(unresolved, context):
             "at a dataset field name resolves to nothing. Check the metric's argument mappings in "
             "the leaderboard settings, and that the source submission has been processed and has "
             "this field for this sample. Only scalar/metric fields are available as gt_*/sub_* "
-            "values; image, depth and histogram fields are not (histograms appear only as "
-            "gt_entropy / sub_entropy_<folder>).")
+            "values; image and depth fields are not. Raw histogram counts are available "
+            "as gt_hist / sub_hist_<folder> / gt_hist_<folder>, alongside the derived "
+            "gt_entropy / sub_entropy_<folder>.")
 
     keys = sorted(context)
     shown = ', '.join(keys[:40]) + (f"  ... (+{len(keys) - 40} more)" if len(keys) > 40 else '')
@@ -146,6 +147,21 @@ def evaluate_dynamic_metric(global_metric, context, arg_mappings_json):
         return None, detail
 
 
+def mapped_context_keys(leaderboard_metrics):
+    """
+    Every context key the given metrics bind an argument to. Feed this to the
+    context builders as `needed_keys` so they know whether to retain the raw
+    histogram arrays (gt_hist / sub_hist_<folder> / gt_hist_<folder>).
+    """
+    keys = set()
+    for lm in leaderboard_metrics or ():
+        try:
+            keys.update(json.loads(getattr(lm, 'arg_mappings', None) or '{}').values())
+        except Exception:
+            pass
+    return keys
+
+
 def _entropy_from_counts(counts):
     """Shannon entropy (bits) of a histogram's counts. 0.0 for an empty histogram."""
     counts = np.asarray(counts)
@@ -228,18 +244,26 @@ class MetricContextBuilder:
     construct one per calculation pass, not one that outlives a request/task.
     """
 
-    def __init__(self, samples, sub=None, submission_folder=None):
+    def __init__(self, samples, sub=None, submission_folder=None, needed_keys=None):
         self.samples = list(samples)
         self.sub = sub
         self.submission_folder = submission_folder
+        # Raw histogram arrays (gt_hist / sub_hist_<folder>) are only kept when a
+        # metric actually maps to them: pass the arg_mappings values here. The data
+        # is parsed either way to derive the entropies, so this costs no extra I/O —
+        # it decides whether hundreds of count arrays are RETAINED per pass.
+        self.needed_keys = set(needed_keys or ())
         self._gt = None
         self._sub = None
         self._folders = None
 
+    def wants(self, key):
+        return key in self.needed_keys
+
     # ---- lazily built indexes ----
 
     def _gt_index(self):
-        """({sample_id: [(name, value)]}, {sample_id: gt_entropy})"""
+        """({sample_id: [(name, value)]}, {sample_id: gt_entropy}, {sample_id: counts})"""
         if self._gt is not None:
             return self._gt
         _app = _app_module()
@@ -261,20 +285,27 @@ class MetricContextBuilder:
             ).filter(HistogramData.sample_id.in_(chunk)).all():
                 legacy_hist[sample_id] = counts
 
-        entropies = {}
+        keep = self.wants('gt_hist')
+        entropies, hists = {}, {}
         for sample_id, value_text in cf_hist.items():
             try:
-                entropies[sample_id] = _entropy_from_counts(json.loads(value_text)['counts'])
+                counts = json.loads(value_text)['counts']
+                entropies[sample_id] = _entropy_from_counts(counts)
+                if keep:
+                    hists[sample_id] = np.asarray(counts, dtype=float)
             except Exception:
                 entropies[sample_id] = 0.0
         # Sample.histogram_data prefers the legacy table, so it wins here too.
-        for sample_id, counts in legacy_hist.items():
+        for sample_id, counts_json in legacy_hist.items():
             try:
-                entropies[sample_id] = _entropy_from_counts(json.loads(counts))
+                counts = json.loads(counts_json)
+                entropies[sample_id] = _entropy_from_counts(counts)
+                if keep:
+                    hists[sample_id] = np.asarray(counts, dtype=float)
             except Exception:
                 entropies[sample_id] = 0.0
 
-        self._gt = (scalars, entropies)
+        self._gt = (scalars, entropies, hists)
         return self._gt
 
     def _sub_index(self):
@@ -291,10 +322,12 @@ class MetricContextBuilder:
 
     def context_for(self, sample):
         context = {}
-        scalars, entropies = self._gt_index()
+        scalars, entropies, gt_hists = self._gt_index()
 
         if sample.id in entropies:
             context['gt_entropy'] = entropies[sample.id]
+        if sample.id in gt_hists:
+            context['gt_hist'] = gt_hists[sample.id]
 
         for name, value in scalars.get(sample.id, ()):
             context[f"gt_{name}"] = value
@@ -316,7 +349,10 @@ class MetricContextBuilder:
                     if os.path.exists(hist_file):
                         try:
                             with np.load(hist_file) as data:
-                                context[f'sub_entropy_{folder_name}'] = _entropy_from_counts(data['counts'])
+                                counts = data['counts']
+                                context[f'sub_entropy_{folder_name}'] = _entropy_from_counts(counts)
+                                if self.wants(f'sub_hist_{folder_name}'):
+                                    context[f'sub_hist_{folder_name}'] = np.asarray(counts, dtype=float)
                         except Exception as e:
                             print(f"DEBUG: Error reading histogram {folder_name} for {sample.name}: {e}")
 
@@ -327,7 +363,7 @@ class MetricContextBuilder:
         return [self.context_for(s) for s in self.samples]
 
 
-def get_metric_context(sample, sub=None, submission_folder=None):
+def get_metric_context(sample, sub=None, submission_folder=None, needed_keys=None):
     """
     Builds a context dictionary for metric evaluation.
     Includes GT fields and optionally Submission fields for a specific sample.
@@ -338,7 +374,8 @@ def get_metric_context(sample, sub=None, submission_folder=None):
     MetricContextBuilder for the whole set instead — that is where the batching
     pays off (this wrapper re-queries per call).
     """
-    return MetricContextBuilder([sample], sub, submission_folder).context_for(sample)
+    return MetricContextBuilder([sample], sub, submission_folder,
+                                needed_keys=needed_keys).context_for(sample)
 
 
 class GtSourceContextBuilder:
@@ -356,12 +393,18 @@ class GtSourceContextBuilder:
     Same lifetime rule as MetricContextBuilder: one per calculation pass.
     """
 
-    def __init__(self, samples, gt_sub, submission_folder=None):
+    def __init__(self, samples, gt_sub, submission_folder=None, needed_keys=None):
         self.samples = list(samples)
         self.gt_sub = gt_sub
         self.submission_folder = submission_folder
+        # Same opt-in as MetricContextBuilder: raw count arrays are only retained
+        # when a metric maps to gt_hist / gt_hist_<folder>.
+        self.needed_keys = set(needed_keys or ())
         self._fields = None
         self._folders = None
+
+    def wants(self, key):
+        return key in self.needed_keys
 
     def _field_index(self):
         if self._fields is None:
@@ -384,14 +427,17 @@ class GtSourceContextBuilder:
                 context[f"gt_{friendly_name}"] = value
 
         if self.submission_folder:
-            hist_entropies = {}
+            hist_entropies, hist_arrays = {}, {}
             for folder_name in self._folder_list():
                 hist_file = os.path.join(self.submission_folder, folder_name, f'{sample.name}.npz')
                 if not os.path.exists(hist_file):
                     continue
                 try:
                     with np.load(hist_file) as data:
-                        hist_entropies[folder_name] = _entropy_from_counts(data['counts'])
+                        counts = data['counts']
+                        hist_entropies[folder_name] = _entropy_from_counts(counts)
+                        if self.wants(f'gt_hist_{folder_name}') or self.wants('gt_hist'):
+                            hist_arrays[folder_name] = np.asarray(counts, dtype=float)
                 except Exception as e:
                     print(f"DEBUG: Error reading GT-source histogram {folder_name} for {sample.name}: {e}")
 
@@ -400,18 +446,26 @@ class GtSourceContextBuilder:
             if len(hist_entropies) == 1:
                 context['gt_entropy'] = next(iter(hist_entropies.values()))
 
+            for folder_name, arr in hist_arrays.items():
+                context[f"gt_hist_{folder_name}"] = arr
+            # Same single-folder alias the entropies get, so a metric wired to
+            # gt_hist keeps working when its GT source is switched.
+            if len(hist_arrays) == 1:
+                context['gt_hist'] = next(iter(hist_arrays.values()))
+
         return context
 
     def overrides_for_all(self):
         return [self.override_for(s) for s in self.samples]
 
 
-def build_gt_source_context(sample, gt_sub, submission_folder=None):
+def build_gt_source_context(sample, gt_sub, submission_folder=None, needed_keys=None):
     """
     Single-sample wrapper around GtSourceContextBuilder. When iterating samples,
     build one GtSourceContextBuilder for the whole set instead.
     """
-    return GtSourceContextBuilder([sample], gt_sub, submission_folder).override_for(sample)
+    return GtSourceContextBuilder([sample], gt_sub, submission_folder,
+                                  needed_keys=needed_keys).override_for(sample)
 
 
 def apply_gt_source(context, gt_override):

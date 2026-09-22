@@ -3,7 +3,7 @@ import json
 import os
 from app import celery, db, Submission, LeaderboardMetric, MetricResult, Sample, app, CustomField
 from metric_engine import (evaluate_dynamic_metric, sort_metrics_by_dependency, apply_gt_source,
-                           MetricContextBuilder, GtSourceContextBuilder)
+                           MetricContextBuilder, GtSourceContextBuilder, mapped_context_keys)
 import numpy as np
 
 # Configure logging
@@ -100,9 +100,15 @@ def process_submission(self, submission_id, sample_filters=None):
             # Submission folder path
             submission_folder = os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(submission.id))
             
+            # Only the keys this board's metrics actually bind are materialised, so
+            # raw histogram arrays are loaded for a pass that asks for them and
+            # skipped for one that doesn't.
+            needed_keys = mapped_context_keys(leaderboard.leaderboard_metrics)
+
             logger.info(f"Building context for {len(dataset_samples)} samples from folder: {submission_folder}")
             samples_context = MetricContextBuilder(
-                dataset_samples, submission, submission_folder=submission_folder
+                dataset_samples, submission, submission_folder=submission_folder,
+                needed_keys=needed_keys
             ).contexts_for_all()
 
 
@@ -118,7 +124,8 @@ def process_submission(self, submission_id, sample_filters=None):
                 if gt_sub.id not in gt_override_cache:
                     gt_folder = os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(gt_sub.id))
                     gt_override_cache[gt_sub.id] = GtSourceContextBuilder(
-                        dataset_samples, gt_sub, submission_folder=gt_folder
+                        dataset_samples, gt_sub, submission_folder=gt_folder,
+                        needed_keys=needed_keys
                     ).overrides_for_all()
                 return gt_override_cache[gt_sub.id]
 

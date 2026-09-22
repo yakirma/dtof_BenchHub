@@ -613,7 +613,7 @@ def inject_version():
 
 from metric_engine import (evaluate_dynamic_metric, get_metric_context, sort_metrics_by_dependency,
                            build_gt_source_context, apply_gt_source,
-                           MetricContextBuilder, GtSourceContextBuilder)
+                           MetricContextBuilder, GtSourceContextBuilder, mapped_context_keys)
 
 
 class MetricGtSourceResolver:
@@ -625,8 +625,9 @@ class MetricGtSourceResolver:
     the single-sample equivalent and re-queries on every call.
     """
 
-    def __init__(self, samples):
+    def __init__(self, samples, needed_keys=None):
         self.samples = list(samples)
+        self.needed_keys = set(needed_keys or ())
         self._builders = {}
 
     def apply(self, lm, sample, context):
@@ -636,7 +637,8 @@ class MetricGtSourceResolver:
         builder = self._builders.get(gt_sub.id)
         if builder is None:
             gt_folder = os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(gt_sub.id))
-            builder = GtSourceContextBuilder(self.samples, gt_sub, gt_folder)
+            builder = GtSourceContextBuilder(self.samples, gt_sub, gt_folder,
+                                             needed_keys=self.needed_keys)
             self._builders[gt_sub.id] = builder
         return apply_gt_source(context, builder.override_for(sample))
 
@@ -4735,9 +4737,12 @@ def comparison_view(project_name, leaderboard_id):
                         # Fallback to dynamic calculation
                         if target_lm:
                             if not sort_ctx:
+                                sort_needed = mapped_context_keys([target_lm])
                                 sort_ctx['builder'] = MetricContextBuilder(
-                                    all_filtered_samples, target_sub, submission_folder=submission_folder)
-                                sort_ctx['gt'] = MetricGtSourceResolver(all_filtered_samples)
+                                    all_filtered_samples, target_sub, submission_folder=submission_folder,
+                                    needed_keys=sort_needed)
+                                sort_ctx['gt'] = MetricGtSourceResolver(all_filtered_samples,
+                                                                        needed_keys=sort_needed)
                             context = sort_ctx['builder'].context_for(s)
                             context = sort_ctx['gt'].apply(target_lm, s, context)
                             val, err = evaluate_dynamic_metric(target_lm.global_metric, context, target_lm.arg_mappings)
@@ -4816,14 +4821,15 @@ def comparison_view(project_name, leaderboard_id):
     # per-(sample, submission) call this replaces re-queried the ground truth and
     # re-scanned the submission's entire CustomField collection every time.
     page_ctx_builders = {}
-    page_gt_source = MetricGtSourceResolver(samples_on_page)
+    page_needed_keys = mapped_context_keys(leaderboard.leaderboard_metrics)
+    page_gt_source = MetricGtSourceResolver(samples_on_page, needed_keys=page_needed_keys)
 
     def page_metric_context(sample, sub):
         builder = page_ctx_builders.get(sub.id)
         if builder is None:
             # No submission_folder here, matching the previous call — this view
             # doesn't expose sub_entropy_* keys.
-            builder = MetricContextBuilder(samples_on_page, sub)
+            builder = MetricContextBuilder(samples_on_page, sub, needed_keys=page_needed_keys)
             page_ctx_builders[sub.id] = builder
         return builder.context_for(sample)
 
