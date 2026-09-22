@@ -1984,8 +1984,16 @@ def edit_leaderboard(project_name, leaderboard_id):
     # Actually, they are "Calculated Metrics".
     # But user might want to map "gt_list" to "gt_peak" (dataset field).
     
-    dataset_fields = sorted(list(dataset_fields_set))
-    submission_fields = sorted(list(submission_fields_set))
+    # Drop the raw lm_<id> tokens: they are internal identifiers, they only appear
+    # here because submission CustomField rows also carry sample_id, and each
+    # metric's readable name is already offered — bare in the dependency lists,
+    # and prefixed in these. Existing mappings that use lm_<id> still resolve;
+    # this only stops suggesting them.
+    def _is_internal_metric_id(name):
+        return bool(re.fullmatch(r'lm_\d+', name or ''))
+
+    dataset_fields = sorted(f for f in dataset_fields_set if not _is_internal_metric_id(f))
+    submission_fields = sorted(f for f in submission_fields_set if not _is_internal_metric_id(f))
     
     
     # helper for editing metric directions: get all possible metrics that could appear
@@ -2031,9 +2039,11 @@ def edit_leaderboard(project_name, leaderboard_id):
         for cf in sub.custom_fields:
             if cf.field_type not in ('metric', 'scalar'):
                 continue
-            names.add(cf.name)
+            # Same here: offer the metric's readable name, not its lm_<id>.
             if cf.name in lm_friendly:
                 names.add(lm_friendly[cf.name])
+            elif not re.fullmatch(r'lm_\d+', cf.name or ''):
+                names.add(cf.name)
         # Histogram folders are exposed as gt_entropy_<folder> (see
         # build_gt_source_context), so offer them under that name.
         sub_folder = os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(sub.id))
