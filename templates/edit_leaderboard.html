@@ -740,7 +740,7 @@
 <div id="mapping-row-template" style="display:none;">
     <div class="row g-2 mb-2 mapping-row">
         <div class="col-4">
-            <input type="text" class="form-control form-control-sm" name="arg_name[]" placeholder="Arg Name">
+            <input type="text" class="form-control form-control-sm" name="arg_name[]" placeholder="Arg Name" autocomplete="off">
         </div>
         <div class="col-3">
             <select class="form-select form-select-sm" name="source[]">
@@ -751,7 +751,7 @@
             </select>
         </div>
         <div class="col-4">
-            <input type="text" class="form-control form-control-sm" name="field_name[]" placeholder="Folder/Field Name">
+            <input type="text" class="form-control form-control-sm" name="field_name[]" placeholder="Folder/Field Name" autocomplete="off">
         </div>
         <div class="col-1">
             <button type="button" class="btn btn-sm btn-outline-danger remove-mapping">&times;</button>
@@ -816,7 +816,7 @@
         row.className = 'row g-2 mb-2 mapping-row';
         row.innerHTML = `
             <div class="col-4">
-                <input type="text" class="form-control form-control-sm" name="arg_name[]" placeholder="Arg Name (e.g. gt)" value="${values.arg || ''}" required ${values.arg ? 'readonly' : ''}>
+                <input type="text" class="form-control form-control-sm" name="arg_name[]" placeholder="Arg Name (e.g. gt)" value="${values.arg || ''}" required autocomplete="off" ${values.arg ? 'readonly' : ''}>
             </div>
             <div class="col-3">
                 <select class="form-select form-select-sm" name="source[]">
@@ -828,7 +828,7 @@
                 </select>
             </div>
             <div class="col-4">
-                <input type="text" class="form-control form-control-sm field-input" name="field_name[]" placeholder="Folder/Field Name" value="${values.field || ''}" required list="gt-fields-list">
+                <input type="text" class="form-control form-control-sm field-input" name="field_name[]" placeholder="Folder/Field Name" value="${values.field || ''}" required autocomplete="off" list="gt-fields-list">
             </div>
             <div class="col-1">
                 <button type="button" class="btn btn-sm btn-outline-danger remove-mapping">&times;</button>
@@ -1292,7 +1292,7 @@
             row.className = 'row g-2 mb-2 viz-mapping-row';
             row.innerHTML = `
                 <div class="col-4">
-                    <input type="text" class="form-control form-control-sm" name="viz_arg_name[]" placeholder="Arg Name" value="${values.arg || ''}" required ${values.arg ? 'readonly' : ''}>
+                    <input type="text" class="form-control form-control-sm" name="viz_arg_name[]" placeholder="Arg Name" value="${values.arg || ''}" required autocomplete="off" ${values.arg ? 'readonly' : ''}>
                 </div>
                 <div class="col-3">
                     <select class="form-select form-select-sm viz-source-select" name="viz_source[]">
@@ -1304,7 +1304,7 @@
                     </select>
                 </div>
                 <div class="col-4">
-                    <input type="text" class="form-control form-control-sm viz-field-input" name="viz_field_name[]" placeholder="Field Name" value="${values.field || ''}" required list="${initialDatalist}">
+                    <input type="text" class="form-control form-control-sm viz-field-input" name="viz_field_name[]" placeholder="Field Name" value="${values.field || ''}" required autocomplete="off" list="${initialDatalist}">
                 </div>
                 <div class="col-1">
                     <button type="button" class="btn btn-sm btn-outline-danger remove-viz-mapping">&times;</button>
