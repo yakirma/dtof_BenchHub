@@ -107,6 +107,7 @@
                                 <i class="bi bi-arrow-up-circle"></i> Load
                             </button>
                         </div>
+                        <div class="form-text" id="viz-file-status"></div>
                         <div class="form-text">Choose a file, then click <strong>Load</strong> to populate the code
                             implementation below. ZIP files are processed on save.</div>
                     </div>
@@ -315,8 +316,26 @@ def my_visualization(samples):
 
         const reader = new FileReader();
         reader.onload = function (event) {
+            let text = event.target.result;
+            const status = document.getElementById('viz-file-status');
+            // Files from scripts/obfuscator.html are "BASE64:<payload>". Decode here
+            // so the editor shows real Python instead of the encoded blob — the exact
+            // inverse of the obfuscator's btoa(unescape(encodeURIComponent(x))).
+            // (handle_dlp_safe_code() also decodes server-side, so an undecoded paste
+            // still saves correctly; this is about being able to read and edit it.)
+            if (typeof text === 'string' && text.trim().indexOf('BASE64:') === 0) {
+                try {
+                    text = decodeURIComponent(escape(atob(text.trim().substring(7))));
+                    if (status) { status.textContent = 'Decoded obfuscated file.'; status.className = 'form-text text-success'; }
+                } catch (err) {
+                    if (status) { status.textContent = 'Could not decode this .safe.txt file: ' + err.message; status.className = 'form-text text-danger'; }
+                    return;
+                }
+            } else if (status) {
+                status.textContent = ''; status.className = 'form-text';
+            }
             console.log("File read successfully, updating implementation field.");
-            document.getElementById('viz-code').value = event.target.result;
+            document.getElementById('viz-code').value = text;
         };
         reader.onerror = function (err) {
             console.error("FileReader error:", err);
