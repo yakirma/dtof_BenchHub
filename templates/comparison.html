@@ -3621,6 +3621,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             const elErr = q('.sp-error');
             // Free-text axis-title overrides for this panel (blank = auto from field).
             const axisLabel = { x: '', y: '' };
+            // Clusters drawn by the last plot, so the Labels editor can offer an alias
+            // for each one. A cluster is not a field, so it has no entry in SP.fields
+            // to hang an alias off — it needs its own synthetic key.
+            let clusterRows = [];
             // The figure has a fixed ~1.5x height (CSS height:60vh on .sp-plot-div),
             // is always fully visible, and the controls (.sp-menu) scroll when there
             // isn't room for both. fitFigure just re-fits Plotly to the pixel size
@@ -3797,8 +3801,35 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 });
                 const hdr = document.createElement('div');
                 hdr.className = 'fw-bold small text-muted mt-2 mb-1';
-                hdr.textContent = 'Legend labels (per Y series)';
+                hdr.textContent = clusterRows.length
+                    ? 'Legend labels (per cluster)' : 'Legend labels (per Y series)';
                 list.appendChild(hdr);
+
+                // Clustering replaces the per-submission series with one entry per tag
+                // value, so those are what the legend shows and what is aliasable.
+                if (clusterRows.length) {
+                    clusterRows.forEach(row => {
+                        const line = document.createElement('div');
+                        line.className = 'd-flex align-items-center gap-2 mb-1';
+                        const span = document.createElement('span');
+                        span.className = 'small text-muted text-truncate';
+                        span.style.minWidth = '170px'; span.style.maxWidth = '170px';
+                        span.textContent = row.label; span.title = row.label;
+                        const inp = document.createElement('input');
+                        inp.type = 'text'; inp.className = 'form-control form-control-sm';
+                        inp.placeholder = row.inherited ? row.inherited + ' (inherited)' : 'legend alias…';
+                        inp.value = aliases[row.aliasKey] || '';
+                        inp.addEventListener('change', () => {
+                            const v = inp.value.trim();
+                            if (v) aliases[row.aliasKey] = v; else delete aliases[row.aliasKey];
+                            aliasesChanged();
+                        });
+                        line.appendChild(span); line.appendChild(inp);
+                        list.appendChild(line);
+                    });
+                    return;
+                }
+
                 // Aliases affect the legend only, and the legend shows the Y series,
                 // so only Y fields are aliasable here.
                 const uniq = Array.from(new Set(getSelectedYKeys()));
@@ -4085,10 +4116,17 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         if (existing) {
                             existing.members.push({ xKey: sp.xKey, yKey: sp.yKey });
                             existing.clusterCount += 1;
+                            // A cluster inherits the first alias any of its members
+                            // already carried, so labels survive turning clustering on.
+                            if (!existing.inheritedAlias && aliases[sp.yKey]) {
+                                existing.inheritedAlias = aliases[sp.yKey];
+                            }
                         } else {
                             sp.clusterLabel = cluster;
                             sp.clusterCount = 1;
                             sp.suffix = '';
+                            sp.aliasKey = 'cluster::' + mk;
+                            sp.inheritedAlias = aliases[sp.yKey] || '';
                             merged.set(mk, sp);
                         }
                     });
@@ -4097,6 +4135,15 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 }
 
                 const multiY = specs.length > 1;
+
+                // Hand the Labels editor one row per cluster. Explicit alias wins over
+                // an inherited one, which wins over the raw tag value.
+                clusterRows = specs.filter(sp => sp.clusterLabel).map(sp => ({
+                    aliasKey: sp.aliasKey,
+                    label: (multiY ? labelFor(sp.yKey) + ' — ' : '') + sp.clusterLabel
+                        + (sp.clusterCount > 1 ? '  (' + sp.clusterCount + ' submissions)' : ''),
+                    inherited: sp.inheritedAlias || ''
+                }));
                 const showTags = q('.sp-show-tags').checked;
                 const showBoxPoints = q('.sp-box-points') && q('.sp-box-points').checked;
                 const showErrBars = q('.sp-err-bars') && q('.sp-err-bars').checked;
@@ -4195,8 +4242,15 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         // A clustered series is named by its tag value (with the field
                         // name too when several fields are plotted), since it no longer
                         // belongs to any single submission.
+                        // An alias replaces the WHOLE entry, matching how qualifiedLabel
+                        // treats field aliases: explicit cluster alias first, then one
+                        // inherited from a member, else the composed cluster label.
+                        const clusterAlias = spec.clusterLabel
+                            ? (aliases[spec.aliasKey] || spec.inheritedAlias || '')
+                            : '';
                         const base = spec.clusterLabel
-                            ? (multiY ? labelFor(yKey) + ' — ' + spec.clusterLabel : spec.clusterLabel)
+                            ? (clusterAlias
+                                || (multiY ? labelFor(yKey) + ' — ' + spec.clusterLabel : spec.clusterLabel))
                             : null;
                         if (gKey && multiY) { colorIdx = yIdx; markerIdx = gIdx; name = (base || qualifiedLabel(yKey) + spec.suffix) + ' — ' + g; }
                         else if (gKey) { colorIdx = gIdx; markerIdx = gIdx; name = base ? base + ' — ' + g : String(g) + spec.suffix; }
