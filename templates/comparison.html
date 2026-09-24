@@ -1299,6 +1299,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         </div>
 
         <div class="d-flex justify-content-end mb-2 sp-toolbar">
+            <button type="button" class="btn btn-outline-primary btn-sm me-2 sp-share"
+                title="Publish this plot at a permanent, interactive link"><i class="bi bi-share"></i> Share</button>
             <button type="button" class="btn btn-outline-secondary btn-sm me-2 sp-copy-img"
                 title="Copy plot image to clipboard (fixed size, independent of layout)"><i class="bi bi-clipboard"></i> Copy</button>
             <div class="dropdown">
@@ -1311,6 +1313,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     <li><a class="dropdown-item" href="#" data-dl="csv">Plotted data (CSV)</a></li>
                     <li><a class="dropdown-item" href="#" data-dl="json">Figure spec (JSON)</a></li>
                 </ul>
+            </div>
+        </div>
+        <div class="alert alert-success py-2 px-3 small mb-2 sp-share-result" style="display:none;">
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+                <i class="bi bi-link-45deg"></i>
+                <a class="font-monospace sp-share-link text-break" href="#" target="_blank" rel="noopener"></a>
+                <button type="button" class="btn btn-sm btn-outline-success py-0 sp-share-copy">Copy</button>
+                <a class="small ms-auto sp-share-manage" href="#">Manage shared links</a>
             </div>
         </div>
 
@@ -3349,6 +3359,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         if (!modalEl) return;
 
         const dataUrl = "{{ url_for('comparison_scalar_data', leaderboard_id=submissions[0].leaderboard.id) }}";
+        const shareUrl = "{{ url_for('create_shared_plot') }}";
+        const shareLeaderboardId = {{ submissions[0].leaderboard.id }};
         const subIds = [{{ submissions | map(attribute = 'id') | join(', ') }}];
 
         let SP = null;
@@ -4047,6 +4059,72 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             // the image is the same regardless of tiling / fullscreen. Uses the
             // async Clipboard API on https/localhost, and falls back to the legacy
             // execCommand path on plain http (LAN).
+            // Publish the figure as it is rendered right now. What gets stored is the
+            // exact Plotly input (traces + layout), so the link reproduces this view
+            // and stays interactive, independent of the data it came from.
+            function shareFigure() {
+                const btn = q('.sp-share');
+                const box = q('.sp-share-result');
+                if (!plotDiv || !plotDiv.data || !plotDiv.data.length) { showError('Plot something before sharing.'); return; }
+                clearError();
+                const axisText = (ax) => (plotDiv.layout && plotDiv.layout[ax] && plotDiv.layout[ax].title
+                    && (plotDiv.layout[ax].title.text || plotDiv.layout[ax].title)) || '';
+                const suggested = (q('.sp-title').value || '').trim()
+                    || ((axisText('yaxis') || 'Y') + ' vs ' + (axisText('xaxis') || 'X'));
+                const title = window.prompt('Title for the shared plot:', suggested);
+                if (title === null) return;   // cancelled
+
+                const data = JSON.parse(JSON.stringify(plotDiv.data));
+                // Clicking a point opens its sample in THIS app; on a public link that
+                // does nothing, so drop the hint from the hover text.
+                data.forEach(tr => {
+                    if (typeof tr.hovertemplate === 'string') {
+                        tr.hovertemplate = tr.hovertemplate.replace(/<br><span[^>]*>click to open sample[^<]*<\/span>/, '');
+                    }
+                });
+                const layout = JSON.parse(JSON.stringify(plotDiv.layout || {}));
+
+                const html = btn.innerHTML;
+                btn.disabled = true;
+                btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Sharing';
+                fetch(shareUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        title: title.trim(),
+                        figure: { data: data, layout: layout },
+                        leaderboard_id: shareLeaderboardId,
+                        source_url: window.location.href
+                    })
+                })
+                    .then(r => r.json().then(j => ({ ok: r.ok, j: j })))
+                    .then(({ ok, j }) => {
+                        if (!ok) throw new Error(j.error || 'share failed');
+                        const a = q('.sp-share-link');
+                        a.href = j.url; a.textContent = j.url;
+                        q('.sp-share-manage').href = j.manage_url;
+                        q('.sp-share-copy').onclick = () => copyShareLink(j.url);
+                        box.style.display = '';
+                        copyShareLink(j.url);
+                    })
+                    .catch(err => showError('Could not share: ' + err.message))
+                    .finally(() => { btn.disabled = false; btn.innerHTML = html; });
+            }
+            function copyShareLink(url) {
+                const btn = q('.sp-share-copy');
+                const done = () => { btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); };
+                if (navigator.clipboard && window.isSecureContext) {
+                    navigator.clipboard.writeText(url).then(done).catch(() => { });
+                    return;
+                }
+                // Plain http (LAN): the async clipboard API is unavailable.
+                const ta = document.createElement('textarea');
+                ta.value = url; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+                document.body.appendChild(ta); ta.select();
+                try { if (document.execCommand('copy')) done(); } catch (e) { }
+                ta.remove();
+            }
+
             function copyFigure() {
                 const btn = q('.sp-copy-img');
                 if (!plotDiv || !plotDiv.data || !plotDiv.data.length) { showError('Plot something before copying.'); return; }
@@ -4517,6 +4595,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 el.addEventListener('click', (e) => { e.preventDefault(); downloadFigure(el.getAttribute('data-dl')); });
             });
             q('.sp-copy-img').addEventListener('click', copyFigure);
+            q('.sp-share').addEventListener('click', shareFigure);
 
             const api = { root: root, plot: plot, applyAliasesToSelects: applyAliasesToSelects, populate: populate, plotDiv: plotDiv, cleanup: cleanup, fitFigure: fitFigure };
             const rm = q('.sp-remove-panel');

@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block title %}Shared Plots - Bench-Hub{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0"><i class="bi bi-share me-2"></i>Shared Plots</h1>
+    <span class="text-muted small">{{ plots|length }} active link{{ '' if plots|length == 1 else 's' }}</span>
+</div>
+
+<p class="text-muted small">
+    Plots published from the comparison view's <strong>Share</strong> button. Each link is an interactive
+    snapshot of the figure at the moment it was shared. Deleting a link stops it from opening immediately.
+    Anyone who can reach this server can open a link — there is no login.
+</p>
+
+{% if plots %}
+<div class="table-responsive">
+    <table class="table table-hover align-middle">
+        <thead>
+            <tr>
+                <th>Title</th>
+                <th>Leaderboard</th>
+                <th>Created</th>
+                <th class="text-end">Views</th>
+                <th>Last viewed</th>
+                <th class="text-end">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in plots %}
+            {% set link = url_for('view_shared_plot', token=p.token, _external=True) %}
+            <tr>
+                <td>
+                    <a href="{{ link }}" target="_blank" rel="noopener" class="fw-semibold">{{ p.title }}</a>
+                    <div class="small text-muted font-monospace text-truncate" style="max-width: 360px;"
+                        title="{{ link }}">{{ link }}</div>
+                </td>
+                <td>
+                    {% if p.leaderboard_id and p.leaderboard_id in leaderboards %}
+                    {% if p.source_url %}
+                    <a href="{{ p.source_url }}" class="small">{{ leaderboards[p.leaderboard_id].name }}</a>
+                    {% else %}
+                    <span class="small">{{ leaderboards[p.leaderboard_id].name }}</span>
+                    {% endif %}
+                    {% else %}
+                    <span class="small text-muted">{{ 'deleted' if p.leaderboard_id else '—' }}</span>
+                    {% endif %}
+                </td>
+                <td class="small">
+                    {{ p.created_at.strftime('%Y-%m-%d %H:%M') }}
+                    {% if p.created_by %}<div class="text-muted">{{ p.created_by }}</div>{% endif %}
+                </td>
+                <td class="text-end">{{ p.view_count or 0 }}</td>
+                <td class="small">
+                    {{ p.last_viewed_at.strftime('%Y-%m-%d %H:%M') if p.last_viewed_at else 'never' }}
+                </td>
+                <td class="text-end text-nowrap">
+                    <button type="button" class="btn btn-sm btn-outline-secondary copy-link-btn"
+                        data-url="{{ link }}" title="Copy link"><i class="bi bi-clipboard"></i> Copy</button>
+                    <a href="{{ link }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-primary"
+                        title="Open"><i class="bi bi-box-arrow-up-right"></i></a>
+                    <form action="{{ url_for('delete_shared_plot', plot_id=p.id) }}" method="post" class="d-inline"
+                        onsubmit="return confirm('Delete this shared link? Anyone who has it will get a &quot;no longer available&quot; page.');">
+                        <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete link">
+                            <i class="bi bi-trash"></i> Delete
+                        </button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="text-center py-5 border rounded bg-body-tertiary">
+    <p class="text-muted mb-1">No shared plots yet.</p>
+    <p class="small text-muted mb-0">Open a comparison, build a plot in <strong>Scalar X-Y Plot</strong>,
+        and press <strong>Share</strong>.</p>
+</div>
+{% endif %}
+
+<script>
+    // navigator.clipboard needs https/localhost; fall back to execCommand on plain http (LAN).
+    function copyText(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+            return navigator.clipboard.writeText(text);
+        }
+        return new Promise((resolve, reject) => {
+            const ta = document.createElement('textarea');
+            ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+            document.body.appendChild(ta); ta.select();
+            try { document.execCommand('copy') ? resolve() : reject(new Error('copy rejected')); }
+            catch (e) { reject(e); }
+            finally { ta.remove(); }
+        });
+    }
+    document.querySelectorAll('.copy-link-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const html = btn.innerHTML;
+            copyText(btn.dataset.url)
+                .then(() => { btn.innerHTML = '<i class="bi bi-clipboard-check"></i> Copied'; })
+                .catch(() => { window.prompt('Copy this link:', btn.dataset.url); })
+                .finally(() => setTimeout(() => { btn.innerHTML = html; }, 1500));
+        });
+    });
+</script>
+{% endblock %}

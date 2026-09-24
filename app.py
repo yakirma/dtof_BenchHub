@@ -39,6 +39,7 @@ from metric_engine import evaluate_dynamic_metric, get_metric_context
 import subprocess
 import shlex
 import time
+import secrets
 
 # Import local configuration (optional, with fallback)
 try:
@@ -553,6 +554,31 @@ class MetricResult(db.Model):
     
     submission = db.relationship('Submission', backref=db.backref('metric_results', lazy='dynamic', cascade="all, delete-orphan"))
     leaderboard_metric = db.relationship('LeaderboardMetric', backref=db.backref('results', cascade='all, delete-orphan'))
+
+
+class SharedPlot(db.Model):
+    """
+    A plot from the comparison view published at a permanent link (/p/<token>).
+
+    Stores a SNAPSHOT of the rendered Plotly figure (data + layout), so the link
+    shows exactly what was shared and stays interactive — zoom, pan, hover,
+    legend toggles — without depending on the source data still existing.
+    Deleting the row kills the link.
+    """
+    id = db.Column(db.Integer, primary_key=True)
+    token = db.Column(db.String(32), unique=True, nullable=False, index=True)
+    title = db.Column(db.String(200), nullable=False)
+    figure_json = db.Column(db.Text, nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=True)
+    # Plain ints, not FKs: the snapshot is self-contained, so deleting the source
+    # leaderboard must not cascade into (or dangle) the shared link.
+    leaderboard_id = db.Column(db.Integer, nullable=True)
+    source_url = db.Column(db.String(1000), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    created_by = db.Column(db.String(100), nullable=True)
+    view_count = db.Column(db.Integer, default=0, nullable=False)
+    last_viewed_at = db.Column(db.DateTime, nullable=True)
+
 
 class Leaderboard(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -1585,7 +1611,10 @@ def load_project_context():
     # Public routes and API routes that don't need project context check
     # list_projects, app_settings, docs NOW ALLOW context loading (via cookie) so tabs stay visible
     public_endpoints = ['static', 'create_project', 'select_project', 'check_and_migrate_db', 
-                        'legacy_leaderboard_redirect', 'legacy_comparison_redirect']
+                        'legacy_leaderboard_redirect', 'legacy_comparison_redirect',
+                        # Shared plot links are opened by people who may never
+                        # have visited the app, so they have no project cookie.
+                        'view_shared_plot']
     if request.endpoint and (request.endpoint in public_endpoints or request.endpoint.startswith('static')):
         return
     
@@ -7847,6 +7876,79 @@ def _one_shot_viz_cache_wipe():
             return
     os.makedirs(os.path.dirname(marker), exist_ok=True)
     open(marker, 'w').close()
+
+# --- Shared plots ------------------------------------------------------------
+SHARED_PLOT_MAX_BYTES = 20 * 1024 * 1024   # a figure carries its data; cap runaway payloads
+
+
+@app.route('/<project_name>/shared_plots/create', methods=['POST'])
+def create_shared_plot(project_name):
+    """Publish the figure the plot panel is currently showing at /p/<token>."""
+    if request.content_length and request.content_length > SHARED_PLOT_MAX_BYTES:
+        return jsonify({'error': 'Figure too large to share.'}), 413
+    payload = request.get_json(silent=True) or {}
+    figure = payload.get('figure') or {}
+    if not isinstance(figure, dict) or not isinstance(figure.get('data'), list) or not figure['data']:
+        return jsonify({'error': 'Nothing to share: plot something first.'}), 400
+
+    title = (payload.get('title') or '').strip()[:200] or 'Shared plot'
+    project = Project.query.filter_by(name=project_name).first()
+    try:
+        leaderboard_id = int(payload.get('leaderboard_id')) if payload.get('leaderboard_id') else None
+    except (TypeError, ValueError):
+        leaderboard_id = None
+
+    shared = SharedPlot(
+        token=secrets.token_urlsafe(12),
+        title=title,
+        figure_json=json.dumps({'data': figure['data'], 'layout': figure.get('layout') or {}}),
+        project_id=project.id if project else None,
+        leaderboard_id=leaderboard_id,
+        source_url=(payload.get('source_url') or '')[:1000] or None,
+        created_by=get_current_git_author() or None,
+    )
+    db.session.add(shared)
+    db.session.commit()
+    return jsonify({
+        'id': shared.id,
+        'token': shared.token,
+        'url': url_for('view_shared_plot', token=shared.token, _external=True),
+        'manage_url': url_for('list_shared_plots', project_name=project_name),
+    })
+
+
+@app.route('/p/<token>')
+def view_shared_plot(token):
+    """Public, standalone view of a shared plot — no app chrome, no project needed."""
+    shared = SharedPlot.query.filter_by(token=token).first()
+    if not shared:
+        return render_template('shared_plot_view.html', shared=None, figure=None), 404
+    shared.view_count = (shared.view_count or 0) + 1
+    shared.last_viewed_at = datetime.utcnow()
+    db.session.commit()
+    return render_template('shared_plot_view.html', shared=shared,
+                           figure=json.loads(shared.figure_json))
+
+
+@app.route('/<project_name>/shared_plots')
+def list_shared_plots(project_name):
+    project = Project.query.filter_by(name=project_name).first_or_404()
+    plots = (SharedPlot.query.filter_by(project_id=project.id)
+             .order_by(SharedPlot.created_at.desc()).all())
+    leaderboards = {lb.id: lb for lb in Leaderboard.query.filter_by(project_id=project.id).all()}
+    return render_template('shared_plots.html', plots=plots, leaderboards=leaderboards,
+                           project_name=project_name)
+
+
+@app.route('/<project_name>/shared_plots/<int:plot_id>/delete', methods=['POST'])
+def delete_shared_plot(project_name, plot_id):
+    shared = SharedPlot.query.get_or_404(plot_id)
+    title = shared.title
+    db.session.delete(shared)
+    db.session.commit()
+    flash(f'Shared link "{title}" deleted — it no longer opens.', 'success')
+    return redirect(url_for('list_shared_plots', project_name=project_name))
+
 
 def bootstrap():
     """Prepare the runtime state the server needs. Called by run.py (the entry

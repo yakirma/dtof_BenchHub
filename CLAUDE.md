@@ -74,6 +74,10 @@ The same is available in-app: **General Settings -> Version & Updates** has an "
 
 `comparison_scalar_data` feeds the plot: fields keyed `gt::<name>`, `tag::<key>`, `sub::<id>::<name>`, plus `submissions` (per-submission `label`, `tags`, and `tag_pairs` parsed from `key=value` tags). The front end synthesises "All submissions" virtual fields (`all::<name>`) that expand to one series per submission, usable on X and Y. **Cluster by tag** merges the specs of submissions sharing a tag value into one series with several `members`, pooling their points; each spec carries `members: [{xKey, yKey}]` so the clustered and unclustered paths share one series builder.
 
+## Shared plots
+
+The scalar plot's **Share** button POSTs the rendered figure (`plotDiv.data` + `layout`) to `create_shared_plot`, which stores it in `SharedPlot` under a random token and returns `/p/<token>`. That link is a **snapshot** — interactive (zoom/pan/hover/legend), but the data is frozen at share time and survives the source being deleted. `/p/<token>` is standalone (`shared_plot_view.html`, no base template) and listed in `load_project_context`'s `public_endpoints`, because recipients have no project cookie and would otherwise be redirected to `/projects`. **Shared Plots** in the project navbar (`list_shared_plots`) shows views / last viewed and deletes links; a deleted token renders a 404 "no longer available" page. The table is created by `db.create_all()` in `bootstrap()`. Like everything else here there is no auth: the token is the only access control.
+
 ## Conventions worth knowing
 
 - `leaderboard_view` must not touch `sub.custom_fields` or issue per-(metric, submission) queries — with many submissions that is samples x fields x submissions ORM rows and metrics x submissions round trips. Custom-metric column names come from one `DISTINCT` query, the sample-name filter is derived once, and every custom-metric raw value is fetched in one batched query keyed by `(submission_id, name)`.

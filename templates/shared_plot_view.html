@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ shared.title if shared else 'Link not available' }} · BenchHub</title>
+    {# Standalone on purpose: a share link must open for people who have never
+       used the app, so it carries no navbar, project context or app scripts. #}
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        html, body { height: 100%; margin: 0; }
+        body {
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            background: #ffffff; color: #1f2328;
+        }
+        .wrap { display: flex; flex-direction: column; height: 100%; }
+        header { padding: 14px 20px 6px; }
+        h1 { font-size: 18px; font-weight: 600; margin: 0; }
+        .meta { font-size: 12px; color: #59636e; margin-top: 3px; }
+        #plot { flex: 1 1 auto; min-height: 320px; }
+        .gone { max-width: 520px; margin: 18vh auto 0; padding: 0 20px; text-align: center; }
+    </style>
+</head>
+<body>
+{% if shared %}
+    <div class="wrap">
+        <header>
+            <h1>{{ shared.title }}</h1>
+            <div class="meta">
+                Snapshot taken {{ shared.created_at.strftime('%Y-%m-%d %H:%M') }} UTC{% if shared.created_by %} by {{ shared.created_by }}{% endif %}
+                · interactive: zoom, pan, hover, click legend entries to toggle
+            </div>
+        </header>
+        <div id="plot"></div>
+    </div>
+    <script>
+        const fig = {{ figure|tojson }};
+        // The panel's figure was sized to its container; let this one fill the page.
+        const layout = Object.assign({}, fig.layout || {}, { autosize: true });
+        delete layout.width;
+        delete layout.height;
+        Plotly.newPlot('plot', fig.data || [], layout, { responsive: true, displaylogo: false });
+    </script>
+{% else %}
+    <div class="gone">
+        <h1>This link is no longer available</h1>
+        <p class="meta">The shared plot was deleted, or the link is mistyped.</p>
+    </div>
+{% endif %}
+</body>
+</html>

@@ -258,6 +258,12 @@
                                 <i class="bi bi-sliders me-1"></i> Project Settings
                             </a>
                         </li>
+                        <li class="nav-item">
+                            <a class="nav-link {{ 'active' if request.endpoint == 'list_shared_plots' }}"
+                                href="{{ url_for('list_shared_plots', project_name=g.current_project.name) }}">
+                                <i class="bi bi-share me-1"></i> Shared Plots
+                            </a>
+                        </li>
                         {% endif %}
                     </ul>
 
