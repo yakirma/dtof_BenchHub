@@ -1261,6 +1261,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             </div>
         </div>
 
+        <div class="mb-2 d-flex flex-wrap align-items-center gap-2 small sp-yvis-row" style="display:none !important;"
+            title="Turn series on or off without removing them. Hidden series stay in the legend (click them there too) and in shared links, where they start hidden.">
+            <span class="fw-bold">Show:</span>
+            <span class="d-flex flex-wrap gap-3 sp-yvis-list"></span>
+        </div>
+
         <div class="mb-2 sp-yo-opacity-col" style="display:none;">
             <div class="border rounded p-2 bg-body-tertiary">
                 <div class="fw-bold small mb-1">Series opacity
@@ -3724,21 +3730,51 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             const yOpacity = {};
             let plotRaf = null;
             function schedulePlot() { if (plotRaf) cancelAnimationFrame(plotRaf); plotRaf = requestAnimationFrame(() => { plotRaf = null; plot(); }); }
-            function buildYOpacity() {
-                // Chart type + Auto-zoom live permanently in the dock (right of this
-                // row); only the opacity column appears/disappears with the Y count.
-                const opCol = q('.sp-yo-opacity-col'), list = q('.sp-yopacity-list');
-                if (!opCol || !list) return;
-                // While clustering, the drawn series are the clusters — one slider each,
-                // keyed the same way the traces read their opacity. Otherwise it is one
-                // per Y field. Names follow the legend, aliases included, so a row is
-                // recognisable as the curve it controls.
-                const rows = clusterRows.length
+            // While clustering, the drawn series are the clusters; otherwise one per
+            // Y field. Keyed the way the traces look up their opacity/visibility
+            // (spec.aliasKey || yKey). Names follow the legend, aliases included, so
+            // a row is recognisable as the curve it controls.
+            function seriesRows() {
+                return clusterRows.length
                     ? clusterRows.map(r => ({
                         key: r.aliasKey,
                         label: clusterDisplayName(r) + (r.count > 1 ? '  (' + r.count + ')' : '')
                     }))
                     : getSelectedYKeys().map(k => ({ key: k, label: qualifiedLabel(k) }));
+            }
+            // Per-series on/off. A hidden series is drawn as legendonly, so it can
+            // also be brought back from the legend, and a shared link opens with
+            // the same series hidden.
+            const yHidden = {};
+            function buildYVisibility() {
+                const row = q('.sp-yvis-row'), list = q('.sp-yvis-list');
+                if (!row || !list) return;
+                const rows = seriesRows();
+                list.innerHTML = '';
+                if (rows.length < 2) { row.style.setProperty('display', 'none', 'important'); return; }
+                row.style.removeProperty('display');
+                rows.forEach(entry => {
+                    const lab = document.createElement('label');
+                    lab.className = 'form-check form-check-inline m-0 d-inline-flex align-items-center gap-1';
+                    lab.title = entry.label;
+                    const cb = document.createElement('input');
+                    cb.type = 'checkbox'; cb.className = 'form-check-input m-0';
+                    cb.checked = !yHidden[entry.key];
+                    cb.addEventListener('change', () => { yHidden[entry.key] = !cb.checked; schedulePlot(); });
+                    const txt = document.createElement('span');
+                    txt.className = 'text-truncate'; txt.style.maxWidth = '220px';
+                    txt.textContent = entry.label;
+                    lab.appendChild(cb); lab.appendChild(txt);
+                    list.appendChild(lab);
+                });
+            }
+            function buildYOpacity() {
+                buildYVisibility();
+                // Chart type + Auto-zoom live permanently in the dock (right of this
+                // row); only the opacity column appears/disappears with the Y count.
+                const opCol = q('.sp-yo-opacity-col'), list = q('.sp-yopacity-list');
+                if (!opCol || !list) return;
+                const rows = seriesRows();
                 const scope = q('.sp-opacity-scope');
                 if (scope) scope.textContent = clusterRows.length ? '(per cluster)' : '(per Y field)';
 
@@ -4390,6 +4426,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         // shown for a cluster is the one its trace obeys.
                         const opacityKey = spec.aliasKey || yKey;
                         const opacityVal = multiY ? ((opacityKey in yOpacity) ? yOpacity[opacityKey] : 1) : 1;
+                        const nBefore = traces.length;
                         if (type === 'box') {
                             // One box per distinct X value (Plotly groups by the x array);
                             // multiple Y fields tile side by side via layout.boxmode.
@@ -4460,6 +4497,16 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 line: { color: color }
                             });
                         }
+                        // Tag each trace with the series row it belongs to (one row
+                        // may own several traces when grouping). The shared page
+                        // rebuilds its Show toggles from this, and a series hidden
+                        // here starts hidden there.
+                        traces.slice(nBefore).forEach(t => {
+                            t.visible = yHidden[opacityKey] ? 'legendonly' : true;
+                            t.meta = Object.assign({}, t.meta, {
+                                series: { key: opacityKey, label: spec.clusterLabel ? base : qualifiedLabel(yKey) }
+                            });
+                        });
                     });
                 });
 
@@ -4468,7 +4515,9 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 const zoomRaw = parseFloat(q('.sp-zoom-pct').value);
                 const zoomPct = isFinite(zoomRaw) ? Math.min(100, Math.max(0.001, zoomRaw)) : 100;
                 const allX = [], allY = [];
-                traces.forEach(t => { t.x.forEach(v => allX.push(v)); t.y.forEach(v => allY.push(v)); });
+                // Hidden series don't pull the auto-zoom toward themselves.
+                traces.filter(t => t.visible !== 'legendonly')
+                    .forEach(t => { t.x.forEach(v => allX.push(v)); t.y.forEach(v => allY.push(v)); });
                 const xRange = zoomRange(allX, zoomPct);
                 const yRange = zoomRange(allY, zoomPct);
                 const xFinal = axisLimitRange('x', xRange);

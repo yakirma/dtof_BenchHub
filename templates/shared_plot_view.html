@@ -46,6 +46,10 @@
                 <label class="agg-opt" id="err-wrap"><input type="checkbox" id="err-bars" checked> ±1 std error bars</label>
                 <label class="agg-opt"><input type="checkbox" id="agg-dodge" checked> Offset series</label>
             </div>
+            <div class="controls" id="series-controls">
+                <strong>Show:</strong>
+                <span id="series-list" style="display:flex; gap:12px; flex-wrap:wrap;"></span>
+            </div>
         </header>
         <div id="plot"></div>
     </div>
@@ -85,6 +89,42 @@
         const snapshotKind = (baseTraces.find(b => b.snapKind !== 'none') || { snapKind: 'none' }).snapKind;
         const canAggregate = baseTraces.some(b => b.raw);
 
+        // Per-trace visibility, starting from how the plot was shared: series
+        // turned off with the app's Show toggles (or the legend) start hidden.
+        const visible = baseTraces.map(b => b.tr.visible !== 'legendonly' && b.tr.visible !== false);
+        const snapshotVisible = visible.slice();
+        // Show toggles, one per series the app had (meta.series; one series can
+        // own several traces when grouping). Plots shared before that tag existed
+        // have only the legend.
+        const seriesList = [];
+        baseTraces.forEach((b, i) => {
+            const sr = b.tr.meta && b.tr.meta.series;
+            if (!sr) return;
+            let entry = seriesList.find(e => e.key === sr.key);
+            if (!entry) { entry = { key: sr.key, label: sr.label || sr.key, idx: [] }; seriesList.push(entry); }
+            entry.idx.push(i);
+        });
+        function syncSeriesBoxes() {
+            seriesList.forEach(e => { if (e.cb) e.cb.checked = e.idx.some(i => visible[i]); });
+        }
+        if (seriesList.length > 1) {
+            const list = document.getElementById('series-list');
+            seriesList.forEach(e => {
+                const lab = document.createElement('label');
+                e.cb = document.createElement('input');
+                e.cb.type = 'checkbox';
+                e.cb.addEventListener('change', () => {
+                    e.idx.forEach(i => { visible[i] = e.cb.checked; });
+                    render();
+                });
+                lab.appendChild(e.cb);
+                lab.appendChild(document.createTextNode(' ' + e.label));
+                list.appendChild(lab);
+            });
+            syncSeriesBoxes();
+            document.getElementById('series-controls').style.display = 'flex';
+        }
+
         // Same maths as the comparison view: population std, buckets by exact X.
         function aggregateByX(xs, ys, kind) {
             const byX = new Map();
@@ -117,38 +157,43 @@
             const dodgeOn = document.getElementById('agg-dodge').checked;
             const band = (kind !== 'none' && dodgeOn && withRaw.length > 1) ? dodgeBand(withRaw) : 0;
             const xLbl = axisTitle('xaxis'), yLbl = axisTitle('yaxis');
-            return baseTraces.map(b => {
-                if (!b.raw) return clone(b.tr);
-                const t = clone(b.tr);
-                delete t.error_y; delete t.customdata;
-                if (kind === 'none') {
-                    t.x = b.raw.x; t.y = b.raw.y; t.text = b.raw.text;
-                    if (b.snapKind === 'none') {
-                        // A raw trace as shared: keep its own hover (tags etc).
-                        t.customdata = b.tr.customdata; t.mode = b.rawMode;
-                    } else {
-                        t.mode = 'markers';
-                        t.hovertemplate = '%{text}<br>' + xLbl + ': %{x}<br>' + yLbl + ': %{y}'
-                            + HINT + '<extra>' + (t.name || '') + '</extra>';
-                    }
-                    return t;
-                }
-                const agg = aggregateByX(b.raw.x, b.raw.y, kind);
-                const i = withRaw.indexOf(b), n = withRaw.length;
-                const dodge = band && n > 1 ? ((i / (n - 1)) - 0.5) * band : 0;
-                t.x = agg.xs.map(v => v + dodge);
-                t.y = agg.ys;
-                delete t.text;   // a bucket, not a sample: not clickable
-                t.customdata = agg.xs.map((xv, k) => [agg.ns[k], xv]);
-                t.mode = document.getElementById('agg-line').checked ? 'lines+markers' : 'markers';
-                t.hovertemplate = xLbl + ': %{customdata[1]}<br>' + kind + '(' + yLbl + '): %{y}'
-                    + '<br>n: %{customdata[0]}<extra>' + (t.name || '') + '</extra>';
-                if (kind === 'mean' && document.getElementById('err-bars').checked) {
-                    const color = (t.marker && t.marker.color) || undefined;
-                    t.error_y = { type: 'data', array: agg.sds, visible: true, color: color, thickness: 1.2, width: 4 };
-                }
+            return baseTraces.map((b, i) => {
+                const t = buildOne(b, kind, band, withRaw, xLbl, yLbl);
+                t.visible = visible[i] ? true : 'legendonly';
                 return t;
             });
+        }
+        function buildOne(b, kind, band, withRaw, xLbl, yLbl) {
+            if (!b.raw) return clone(b.tr);
+            const t = clone(b.tr);
+            delete t.error_y; delete t.customdata;
+            if (kind === 'none') {
+                t.x = b.raw.x; t.y = b.raw.y; t.text = b.raw.text;
+                if (b.snapKind === 'none') {
+                    // A raw trace as shared: keep its own hover (tags etc).
+                    t.customdata = b.tr.customdata; t.mode = b.rawMode;
+                } else {
+                    t.mode = 'markers';
+                    t.hovertemplate = '%{text}<br>' + xLbl + ': %{x}<br>' + yLbl + ': %{y}'
+                        + HINT + '<extra>' + (t.name || '') + '</extra>';
+                }
+                return t;
+            }
+            const agg = aggregateByX(b.raw.x, b.raw.y, kind);
+            const i = withRaw.indexOf(b), n = withRaw.length;
+            const dodge = band && n > 1 ? ((i / (n - 1)) - 0.5) * band : 0;
+            t.x = agg.xs.map(v => v + dodge);
+            t.y = agg.ys;
+            delete t.text;   // a bucket, not a sample: not clickable
+            t.customdata = agg.xs.map((xv, k) => [agg.ns[k], xv]);
+            t.mode = document.getElementById('agg-line').checked ? 'lines+markers' : 'markers';
+            t.hovertemplate = xLbl + ': %{customdata[1]}<br>' + kind + '(' + yLbl + '): %{y}'
+                + '<br>n: %{customdata[0]}<extra>' + (t.name || '') + '</extra>';
+            if (kind === 'mean' && document.getElementById('err-bars').checked) {
+                const color = (t.marker && t.marker.color) || undefined;
+                t.error_y = { type: 'data', array: agg.sds, visible: true, color: color, thickness: 1.2, width: 4 };
+            }
+            return t;
         }
 
         function render() {
@@ -165,9 +210,9 @@
             });
             const layout = clone(baseLayout);
             // The sharer's axis limits were chosen for what they were looking at.
-            // Showing something else (e.g. raw points of a Mean plot, or std values)
-            // can fall outside them, so let the view refit.
-            if (kind !== snapshotKind) {
+            // Showing something else (raw points of a Mean plot, std values, a
+            // series they had hidden) can fall outside them, so let the view refit.
+            if (kind !== snapshotKind || visible.some((v, i) => v !== snapshotVisible[i])) {
                 ['xaxis', 'yaxis'].forEach(ax => {
                     if (layout[ax]) { delete layout[ax].range; layout[ax].autorange = true; }
                 });
@@ -184,6 +229,14 @@
         }
 
         render().then(() => {
+            // Legend clicks toggle single traces; record them so a later
+            // re-render (aggregation change) keeps them, and mirror them in Show.
+            gd.on('plotly_restyle', () => {
+                (gd.data || []).forEach((tr, i) => {
+                    if (i < visible.length) visible[i] = tr.visible !== 'legendonly' && tr.visible !== false;
+                });
+                syncSeriesBoxes();
+            });
             if (!sourcePath) return;
             // Same as clicking a point in the app: open the comparison it came
             // from, narrowed to the clicked sample. Resolved against THIS page's
