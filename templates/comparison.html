@@ -4320,6 +4320,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     .catch(err => showError('Copy failed (' + err.message + '). Use Download ▸ PNG instead.'));
             }
 
+            function pointSubmission(gd, p) {
+                const tr = gd.data && gd.data[p.curveNumber];
+                const subs = tr && tr.meta && tr.meta.pointSubs;
+                const i = Array.isArray(p.pointIndex) ? p.pointIndex[0] : p.pointIndex;
+                return (subs && i != null && subs[i]) ? String(subs[i]) : null;
+            }
             function wirePointClick(gd) {
                 gd = gd || plotDiv;
                 if (gd.removeAllListeners) {
@@ -4334,6 +4340,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     const sname = p && p.text;
                     if (!sname) return;
                     const url = new URL(window.location.href);
+                    // Narrow the comparison to the submission the point belongs to.
+                    // Ground-truth-only points have none and keep the full comparison.
+                    const subId = pointSubmission(gd, p);
+                    if (subId) url.searchParams.set('compare_ids', subId);
                     url.searchParams.set('search_query', sname);
                     url.searchParams.set('per_page', '1');
                     url.searchParams.set('page', '1');
@@ -4480,8 +4490,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         groupValsSet.add(g);
                         const skey = sIdx + ' ' + g;
                         let s2 = seriesMap.get(skey);
-                        if (!s2) { s2 = { x: [], y: [], text: [] }; seriesMap.set(skey, s2); }
+                        if (!s2) { s2 = { x: [], y: [], text: [], sub: [] }; seriesMap.set(skey, s2); }
                         s2.x.push(xx); s2.y.push(yy); s2.text.push(sname);
+                        // The submission this point came from (a cluster pools several),
+                        // so a click can open the comparison for just that one.
+                        s2.sub.push(subIdOfKey(member.yKey) || subIdOfKey(member.xKey) || null);
                     });
                   });
                 });
@@ -4550,7 +4563,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     groupKeys.forEach((g, gIdx) => {
                         const s2 = seriesMap.get(yIdx + ' ' + g);
                         if (!s2) return;
-                        let pts = s2.x.map((x, idx2) => ({ x: x, y: s2.y[idx2], t: s2.text[idx2] }));
+                        let pts = s2.x.map((x, idx2) => ({ x: x, y: s2.y[idx2], t: s2.text[idx2], s: s2.sub[idx2] }));
                         if (type === 'line' || isAgg) pts.sort((a, b) => a.x - b.x);
                         let colorIdx, markerIdx, name;
                         // A clustered series is named by its tag value (with the field
@@ -4627,7 +4640,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 // The underlying samples ride along (Plotly ignores `meta`
                                 // for drawing) so a shared snapshot of this plot can
                                 // switch back to raw points or re-aggregate.
-                                meta: { aggKind: type, raw: { x: pts.map(p => p.x), y: pts.map(p => p.y), text: pts.map(p => p.t) } }
+                                meta: { aggKind: type, raw: { x: pts.map(p => p.x), y: pts.map(p => p.y), text: pts.map(p => p.t), sub: pts.map(p => p.s) } }
                             };
                             if (type === 'mean' && showErrBars) {
                                 aggTrace.error_y = {
@@ -4667,6 +4680,9 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             t.meta = Object.assign({}, t.meta, {
                                 series: { key: visKey, label: visLabelOf(yKey), axisLabel: yAxisPartOf(yKey) }
                             });
+                            // Per-point submission ids, aligned with x/y/text (sample
+                            // traces only; a Mean/Std point is a bucket, not a sample).
+                            if (Array.isArray(t.text)) t.meta.pointSubs = pts.map(p => p.s);
                         });
                     });
                 });

@@ -193,6 +193,7 @@
             delete t.error_y; delete t.customdata;
             if (kind === 'none') {
                 t.x = b.raw.x; t.y = b.raw.y; t.text = b.raw.text;
+                if (b.raw.sub) t.meta = Object.assign({}, t.meta, { pointSubs: b.raw.sub });
                 if (b.snapKind === 'none') {
                     // A raw trace as shared: keep its own hover (tags etc).
                     t.customdata = b.tr.customdata; t.mode = b.rawMode;
@@ -296,6 +297,12 @@
                 const p = ev && ev.points && ev.points[0];
                 if (!p || !p.text) return;
                 const url = new URL(sourcePath, window.location.origin);
+                // Just the clicked point's submission, when the plot recorded it
+                // (plots shared before that keep the full comparison).
+                const tr = gd.data[p.curveNumber];
+                const subs = tr && tr.meta && tr.meta.pointSubs;
+                const pi = Array.isArray(p.pointIndex) ? p.pointIndex[0] : p.pointIndex;
+                if (subs && pi != null && subs[pi]) url.searchParams.set('compare_ids', String(subs[pi]));
                 url.searchParams.set('search_query', p.text);
                 url.searchParams.set('per_page', '1');
                 url.searchParams.set('page', '1');
