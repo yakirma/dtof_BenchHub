@@ -104,13 +104,23 @@
             if (!entry) { entry = { key: sr.key, label: sr.label || sr.key, idx: [] }; seriesList.push(entry); }
             entry.idx.push(i);
         });
+        // Toggle mode: the one field shown. Other fields' traces are left out of
+        // the legend (visible: false); within the shown field a legend click only
+        // greys a submission out (legendonly), so it can be clicked back on.
+        let activeKey = null;
         function syncSeriesBoxes() {
-            seriesList.forEach(e => { if (e.cb) e.cb.checked = e.idx.some(i => visible[i]); });
+            seriesList.forEach(e => {
+                if (e.cb) e.cb.checked = activeKey !== null ? e.key === activeKey : e.idx.some(i => visible[i]);
+            });
         }
         // Shared from Toggle mode: one field at a time (radios), and the other
         // fields' traces are left out of the legend rather than greyed in it.
         const toggleMode = !!(baseLayout.meta && baseLayout.meta.yAxis
             && baseLayout.meta.yAxis.showMode === 'toggle') && seriesList.length > 1;
+        if (toggleMode) {
+            const shown = seriesList.find(e => e.idx.some(i => visible[i])) || seriesList[0];
+            activeKey = shown.key;
+        }
         if (seriesList.length > 1) {
             const list = document.getElementById('series-list');
             seriesList.forEach(e => {
@@ -121,7 +131,8 @@
                 e.cb.addEventListener('change', () => {
                     if (toggleMode) {
                         if (!e.cb.checked) return;
-                        seriesList.forEach(o => o.idx.forEach(i => { visible[i] = (o === e); }));
+                        activeKey = e.key;
+                        e.idx.forEach(i => { visible[i] = true; });
                         syncSeriesBoxes();
                     } else {
                         e.idx.forEach(i => { visible[i] = e.cb.checked; });
@@ -170,7 +181,9 @@
             const xLbl = axisTitle('xaxis'), yLbl = axisTitle('yaxis');
             return baseTraces.map((b, i) => {
                 const t = buildOne(b, kind, band, withRaw, xLbl, yLbl);
-                t.visible = visible[i] ? true : (toggleMode && b.tr.meta && b.tr.meta.series ? false : 'legendonly');
+                const sr = b.tr.meta && b.tr.meta.series;
+                if (toggleMode && sr && sr.key !== activeKey) t.visible = false;
+                else t.visible = visible[i] ? true : 'legendonly';
                 return t;
             });
         }
@@ -223,7 +236,9 @@
             // The sharer's axis limits were chosen for what they were looking at.
             // Showing something else (raw points of a Mean plot, std values, a
             // series they had hidden) can fall outside them, so let the view refit.
-            if (kind !== snapshotKind || visible.some((v, i) => v !== snapshotVisible[i])) {
+            const shownNow = (i) => visible[i] && !(toggleMode && baseTraces[i].tr.meta && baseTraces[i].tr.meta.series
+                && baseTraces[i].tr.meta.series.key !== activeKey);
+            if (kind !== snapshotKind || snapshotVisible.some((v, i) => v !== shownNow(i))) {
                 ['xaxis', 'yaxis'].forEach(ax => {
                     if (layout[ax]) { delete layout[ax].range; layout[ax].autorange = true; }
                 });
@@ -234,7 +249,7 @@
             const yMeta = baseLayout.meta && baseLayout.meta.yAxis;
             if (yMeta && !yMeta.override && layout.yaxis) {
                 const parts = (on) => baseTraces
-                    .filter((b, i) => !on || visible[i])
+                    .filter((b, i) => !on || shownNow(i))
                     .map(b => b.tr.meta && b.tr.meta.series && b.tr.meta.series.axisLabel)
                     .filter(Boolean);
                 const shown = parts(true);
