@@ -217,6 +217,25 @@
                     if (layout[ax]) { delete layout[ax].range; layout[ax].autorange = true; }
                 });
             }
+            // Rebuild the Y title the way the app composed it: the axis labels of
+            // the fields now shown, then the f(x) and the aggregation in effect
+            // here. Plots shared before layout.meta.yAxis existed keep theirs.
+            const yMeta = baseLayout.meta && baseLayout.meta.yAxis;
+            if (yMeta && !yMeta.override && layout.yaxis) {
+                const parts = (on) => baseTraces
+                    .filter((b, i) => !on || visible[i])
+                    .map(b => b.tr.meta && b.tr.meta.series && b.tr.meta.series.axisLabel)
+                    .filter(Boolean);
+                const shown = parts(true);
+                const names = Array.from(new Set(shown.length ? shown : parts(false)));
+                if (names.length) {
+                    let text = names.join(', ');
+                    if (yMeta.fn) text = yMeta.fn + '  [' + text + ']';
+                    if (kind === 'mean' || kind === 'std') text = kind + '(' + text + ')';
+                    const t = layout.yaxis.title;
+                    layout.yaxis.title = Object.assign({}, (t && typeof t === 'object') ? t : {}, { text: text });
+                }
+            }
             document.querySelectorAll('.agg-opt').forEach(el => { el.style.display = kind === 'none' ? 'none' : ''; });
             document.getElementById('err-wrap').style.display = kind === 'mean' ? '' : 'none';
             return Plotly.react(gd, data, layout, { responsive: true, displaylogo: false });

@@ -3754,6 +3754,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 if (aliases[k]) return aliases[k];
                 return subIdOfKey(yKey) ? labelFor(yKey) : qualifiedLabel(yKey);
             }
+            // Per-field Y axis label: replaces the field's name in the Y axis title
+            // (blank = the field name). Kept in the shared alias map under its own
+            // prefix, so it follows the same session/panel sync as legend aliases.
+            const YAXIS_PREFIX = 'yaxis::';
+            function yAxisPartOf(yKey) { return aliases[YAXIS_PREFIX + visKeyOf(yKey)] || labelFor(yKey); }
             function visRows() {
                 const seen = new Set(), rows = [];
                 getSelectedYKeys().forEach(yk => {
@@ -3895,11 +3900,42 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     span.textContent = lbl;
                     const inp = document.createElement('input');
                     inp.type = 'text'; inp.className = 'form-control form-control-sm';
-                    inp.placeholder = 'auto'; inp.value = axisLabel[axis] || '';
+                    inp.placeholder = axis === 'y' ? 'auto (from the per-field labels below)' : 'auto';
+                    inp.value = axisLabel[axis] || '';
                     inp.addEventListener('change', () => { axisLabel[axis] = inp.value.trim(); plot(); });
                     row.appendChild(span); row.appendChild(inp);
                     list.appendChild(row);
                 });
+                // One Y-axis label per field (not per submission). The axis title
+                // joins the labels of the fields currently shown; the whole-axis
+                // label above, when set, overrides them.
+                const yRows = visRows();
+                if (yRows.length) {
+                    const h = document.createElement('div');
+                    h.className = 'fw-bold small text-muted mt-2 mb-1';
+                    h.textContent = 'Y axis label (per field)';
+                    list.appendChild(h);
+                    yRows.forEach(entry => {
+                        const row = document.createElement('div');
+                        row.className = 'd-flex align-items-center gap-2 mb-1';
+                        const span = document.createElement('span');
+                        span.className = 'small text-muted text-truncate';
+                        span.style.minWidth = '170px'; span.style.maxWidth = '170px';
+                        span.textContent = entry.label; span.title = entry.label;
+                        const inp = document.createElement('input');
+                        inp.type = 'text'; inp.className = 'form-control form-control-sm';
+                        const sample = getSelectedYKeys().find(k => visKeyOf(k) === entry.key);
+                        inp.placeholder = (sample ? labelFor(sample) : entry.label) + ' (auto)';
+                        inp.value = aliases[YAXIS_PREFIX + entry.key] || '';
+                        inp.addEventListener('change', () => {
+                            const v = inp.value.trim();
+                            if (v) aliases[YAXIS_PREFIX + entry.key] = v; else delete aliases[YAXIS_PREFIX + entry.key];
+                            aliasesChanged();
+                        });
+                        row.appendChild(span); row.appendChild(inp);
+                        list.appendChild(row);
+                    });
+                }
                 const hdr = document.createElement('div');
                 hdr.className = 'fw-bold small text-muted mt-2 mb-1';
                 hdr.textContent = clusterRows.length
@@ -4370,10 +4406,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
                 const xLbl = axisLabel.x.trim() ? axisLabel.x.trim() : axisTitle(xKey, xFnText);
                 // Same field across submissions collapses to one name here (the
-                // legend already distinguishes the submissions).
-                const yLblBase = (new Set(specs.map(s => labelFor(s.yKey)))).size > 1
-                    ? Array.from(new Set(specs.map(s => labelFor(s.yKey)))).join(', ')
-                    : labelFor(specs[0].yKey);
+                // legend already distinguishes the submissions). Built from the
+                // fields that are shown, each by its per-field axis label.
+                const shownSpecs = specs.filter(sp => !yHidden[visKeyOf(sp.yKey)]);
+                const yLblBase = Array.from(new Set((shownSpecs.length ? shownSpecs : specs)
+                    .map(sp => yAxisPartOf(sp.yKey)))).join(', ');
                 const yLblAuto = (yFnText && yFnText.trim() && yFnText.trim() !== 'x') ? (yFnText.trim() + '  [' + yLblBase + ']') : yLblBase;
                 const yLblAgg = isAgg ? (type + '(' + yLblAuto + ')') : yLblAuto;
                 const yLbl = axisLabel.y.trim() ? axisLabel.y.trim() : yLblAgg;
@@ -4522,7 +4559,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         traces.slice(nBefore).forEach(t => {
                             t.visible = yHidden[visKey] ? 'legendonly' : true;
                             t.meta = Object.assign({}, t.meta, {
-                                series: { key: visKey, label: visLabelOf(yKey) }
+                                series: { key: visKey, label: visLabelOf(yKey), axisLabel: yAxisPartOf(yKey) }
                             });
                         });
                     });
@@ -4568,7 +4605,15 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         yref: 'container', y: 0, yanchor: 'bottom',
                         title: { text: gKey ? labelFor(gKey) : '' }
                     },
-                    hovermode: 'closest'
+                    hovermode: 'closest',
+                    // How the Y title was composed, so the shared page can rebuild it
+                    // when fields are toggled or the aggregation changes there.
+                    meta: {
+                        yAxis: {
+                            override: axisLabel.y.trim(),
+                            fn: (yFnText && yFnText.trim() && yFnText.trim() !== 'x') ? yFnText.trim() : ''
+                        }
+                    }
                 };
                 // Multiple Y boxes at the same X tile side by side instead of overlapping.
                 if (type === 'box') layout.boxmode = 'group';
