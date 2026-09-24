@@ -1893,12 +1893,20 @@ def edit_leaderboard(project_name, leaderboard_id):
     sub_ids = [sub.id for sub in submissions]
     
     # Separate fields for UI datalists
-    dataset_fields_set = set(['peak', 'entropy', 'num_samples']) # Standard stuff
-    submission_fields_set = set(['sub_peak', 'sub_entropy'])
+    # No hardcoded entries: the row's source already adds the gt_/sub_ prefix, so
+    # the old 'sub_peak' / 'sub_entropy' saved as sub_sub_peak / sub_sub_entropy,
+    # and 'peak' / 'num_samples' named keys the context never produces. Every
+    # suggestion below is derived from what actually exists.
+    dataset_fields_set = set()
+    submission_fields_set = set()
     
     # 3. Check Custom Fields (Database)
     # GT Custom Fields
-    dataset_custom_fields = CustomField.query.filter(CustomField.sample_id.in_([s.id for s in samples])).all()
+    # Dataset rows only — submission rows also carry sample_id and would otherwise
+    # be offered as ground-truth fields (the same leak the context builder had).
+    dataset_custom_fields = CustomField.query.filter(
+        CustomField.sample_id.in_([s.id for s in samples]),
+        CustomField.submission_id.is_(None)).all()
     for cf in dataset_custom_fields:
         if cf.field_type in ['metric', 'scalar', 'image']:
             dataset_fields_set.add(cf.name)
@@ -1924,6 +1932,7 @@ def edit_leaderboard(project_name, leaderboard_id):
             HistogramData.sample_id.in_([s.id for s in samples])).first())
     if has_gt_hist:
         dataset_fields_set.add('hist')          # -> gt_hist
+        dataset_fields_set.add('entropy')       # -> gt_entropy (derived from it)
 
     # The submission side lives on disk, not in CustomField, so scan the folders.
     for sub in Submission.query.filter_by(leaderboard_id=leaderboard.id).all():

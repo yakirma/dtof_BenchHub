@@ -234,11 +234,10 @@ class MetricContextBuilder:
     property, which made metric calculation quadratic in dataset size. This does
     those lookups once and then serves each sample from dicts.
 
-    Contexts are identical to what the per-sample code produced — including the
-    quirk that gt_* keys can come from submission rows (CustomField.sample_id is
-    set on submission rows too, and Sample.custom_fields matches on sample_id
-    alone, so a submission field "x" also lands in "gt_x", last row by id
-    winning). Existing metrics may rely on it, so it is preserved verbatim.
+    gt_* keys come from the dataset's own rows only (submission_id IS NULL).
+    Submission rows also carry sample_id, and matching on sample_id alone used to
+    leak every submission's fields into gt_* — nondeterministically, since the
+    last row by id won and recomputing any submission reshuffled the ids.
 
     Indexes are built lazily on first use and held for the builder's lifetime —
     construct one per calculation pass, not one that outlives a request/task.
@@ -274,7 +273,14 @@ class MetricContextBuilder:
             rows = db.session.query(
                 CustomField.sample_id, CustomField.name, CustomField.field_type,
                 CustomField.value_float, CustomField.value_text
-            ).filter(CustomField.sample_id.in_(chunk)).order_by(CustomField.id).all()
+            ).filter(
+                CustomField.sample_id.in_(chunk),
+                # Ground truth is the DATASET's rows only. Submission rows carry
+                # sample_id too, and without this filter every submission's fields
+                # leaked into gt_* (last row by id winning) — so gt_pred_pick while
+                # scoring one submission silently read another submission's value.
+                CustomField.submission_id.is_(None)
+            ).order_by(CustomField.id).all()
             for sample_id, name, field_type, value_float, value_text in rows:
                 if field_type == 'scalar':
                     scalars.setdefault(sample_id, []).append((name, value_float))
