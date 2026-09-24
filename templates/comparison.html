@@ -1262,7 +1262,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         </div>
 
         <div class="mb-2 d-flex flex-wrap align-items-center gap-2 small sp-yvis-row" style="display:none !important;"
-            title="Turn series on or off without removing them. Hidden series stay in the legend (click them there too) and in shared links, where they start hidden.">
+            title="Turn a Y field on or off in every submission at once, without removing it. Hidden fields stay in the legend (click entries there to toggle single series) and start hidden in shared links.">
             <span class="fw-bold">Show:</span>
             <span class="d-flex flex-wrap gap-3 sp-yvis-list"></span>
         </div>
@@ -3742,14 +3742,31 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     }))
                     : getSelectedYKeys().map(k => ({ key: k, label: qualifiedLabel(k) }));
             }
-            // Per-series on/off. A hidden series is drawn as legendonly, so it can
-            // also be brought back from the legend, and a shared link opens with
-            // the same series hidden.
+            // Per-FIELD on/off: one switch covers that field in every submission
+            // (and every cluster of it), since the per-submission series already
+            // have the legend. Ground-truth and tag fields keep their own key.
+            // A hidden field is drawn as legendonly, so it can also be brought back
+            // from the legend, and a shared link opens with it hidden.
             const yHidden = {};
+            function visKeyOf(yKey) { return subIdOfKey(yKey) ? ALL_PREFIX + fieldNameOfKey(yKey) : yKey; }
+            function visLabelOf(yKey) {
+                const k = visKeyOf(yKey);
+                if (aliases[k]) return aliases[k];
+                return subIdOfKey(yKey) ? labelFor(yKey) : qualifiedLabel(yKey);
+            }
+            function visRows() {
+                const seen = new Set(), rows = [];
+                getSelectedYKeys().forEach(yk => {
+                    const k = visKeyOf(yk);
+                    if (seen.has(k)) return;
+                    seen.add(k); rows.push({ key: k, label: visLabelOf(yk) });
+                });
+                return rows;
+            }
             function buildYVisibility() {
                 const row = q('.sp-yvis-row'), list = q('.sp-yvis-list');
                 if (!row || !list) return;
-                const rows = seriesRows();
+                const rows = visRows();
                 list.innerHTML = '';
                 if (rows.length < 2) { row.style.setProperty('display', 'none', 'important'); return; }
                 row.style.removeProperty('display');
@@ -4497,14 +4514,15 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 line: { color: color }
                             });
                         }
-                        // Tag each trace with the series row it belongs to (one row
-                        // may own several traces when grouping). The shared page
-                        // rebuilds its Show toggles from this, and a series hidden
+                        // Tag each trace with the field it belongs to (one field owns
+                        // a trace per submission / cluster / group). The shared page
+                        // rebuilds its Show toggles from this, and a field hidden
                         // here starts hidden there.
+                        const visKey = visKeyOf(yKey);
                         traces.slice(nBefore).forEach(t => {
-                            t.visible = yHidden[opacityKey] ? 'legendonly' : true;
+                            t.visible = yHidden[visKey] ? 'legendonly' : true;
                             t.meta = Object.assign({}, t.meta, {
-                                series: { key: opacityKey, label: spec.clusterLabel ? base : qualifiedLabel(yKey) }
+                                series: { key: visKey, label: visLabelOf(yKey) }
                             });
                         });
                     });
