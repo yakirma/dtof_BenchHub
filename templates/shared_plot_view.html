@@ -18,6 +18,10 @@
         h1 { font-size: 18px; font-weight: 600; margin: 0; }
         .meta { font-size: 12px; color: #59636e; margin-top: 3px; }
         #plot { flex: 1 1 auto; min-height: 320px; }
+        .controls { display: none; gap: 14px; align-items: center; flex-wrap: wrap;
+                    font-size: 13px; margin-top: 8px; }
+        .controls select { font: inherit; padding: 2px 4px; }
+        .controls label { display: inline-flex; gap: 4px; align-items: center; }
         .gone { max-width: 520px; margin: 18vh auto 0; padding: 0 20px; text-align: center; }
     </style>
 </head>
@@ -30,37 +34,161 @@
                 Snapshot taken {{ shared.created_at.strftime('%Y-%m-%d %H:%M') }} UTC{% if shared.created_by %} by {{ shared.created_by }}{% endif %}
                 · interactive: zoom, pan, hover, click legend entries to toggle{% if source_path %}, click a point to open its sample{% endif %}
             </div>
+            <div class="controls" id="controls">
+                <label>Aggregation
+                    <select id="agg">
+                        <option value="none">None (all points)</option>
+                        <option value="mean">Mean (group by X value)</option>
+                        <option value="std">Std (group by X value)</option>
+                    </select>
+                </label>
+                <label class="agg-opt"><input type="checkbox" id="agg-line" checked> Line</label>
+                <label class="agg-opt" id="err-wrap"><input type="checkbox" id="err-bars" checked> ±1 std error bars</label>
+                <label class="agg-opt"><input type="checkbox" id="agg-dodge" checked> Offset series</label>
+            </div>
         </header>
         <div id="plot"></div>
     </div>
     <script>
         const fig = {{ figure|tojson }};
-        // The panel's figure was sized to its container; let this one fill the page.
-        const layout = Object.assign({}, fig.layout || {}, { autosize: true });
-        delete layout.width;
-        delete layout.height;
         // Path (no host) of the comparison the plot was shared from; null for
         // plots whose source is unknown.
         const sourcePath = {{ source_path|tojson }};
         const HINT = '<br><span style="font-size:10px">click to open sample ↗</span>';
         const HINT_RE = /<br><span[^>]*>click to open sample[^<]*<\/span>/;
-        (fig.data || []).forEach(tr => {
-            if (typeof tr.hovertemplate !== 'string') return;
-            // Plots shared before click-through existed had the hint stripped.
-            if (sourcePath && Array.isArray(tr.text) && !HINT_RE.test(tr.hovertemplate)) {
-                tr.hovertemplate = tr.hovertemplate.replace('<extra>', HINT + '<extra>');
-            } else if (!sourcePath) {
-                tr.hovertemplate = tr.hovertemplate.replace(HINT_RE, '');
-            }
-        });
         const gd = document.getElementById('plot');
-        Plotly.newPlot(gd, fig.data || [], layout, { responsive: true, displaylogo: false }).then(() => {
+        const clone = (o) => JSON.parse(JSON.stringify(o));
+
+        // The panel's figure was sized to its container; let this one fill the page.
+        const baseLayout = Object.assign({}, fig.layout || {}, { autosize: true });
+        delete baseLayout.width;
+        delete baseLayout.height;
+        const axisTitle = (ax) => {
+            const t = baseLayout[ax] && baseLayout[ax].title;
+            return (t && (t.text || (typeof t === 'string' ? t : ''))) || ax.charAt(0);
+        };
+
+        // Each trace's underlying samples, when the snapshot has them: raw
+        // scatter/line traces ARE the samples; Mean/Std traces carry them in
+        // meta.raw (plots shared before that was added don't, and nor do box
+        // traces — those are always drawn exactly as shared).
+        const baseTraces = (fig.data || []).map(tr => {
+            let raw = null, rawMode = 'markers';
+            if (tr.meta && tr.meta.raw) {
+                raw = tr.meta.raw;
+            } else if ((tr.type || 'scatter') === 'scatter' && Array.isArray(tr.text) && Array.isArray(tr.x)) {
+                raw = { x: tr.x, y: tr.y, text: tr.text };
+                rawMode = tr.mode || 'markers';
+            }
+            return { tr: tr, raw: raw, rawMode: rawMode, snapKind: (tr.meta && tr.meta.aggKind) || 'none' };
+        });
+        const snapshotKind = (baseTraces.find(b => b.snapKind !== 'none') || { snapKind: 'none' }).snapKind;
+        const canAggregate = baseTraces.some(b => b.raw);
+
+        // Same maths as the comparison view: population std, buckets by exact X.
+        function aggregateByX(xs, ys, kind) {
+            const byX = new Map();
+            xs.forEach((x, i) => { if (!byX.has(x)) byX.set(x, []); byX.get(x).push(ys[i]); });
+            const ux = Array.from(byX.keys()).sort((a, b) => a - b);
+            const out = { xs: ux, ys: [], sds: [], ns: [] };
+            ux.forEach(x => {
+                const v = byX.get(x), n = v.length;
+                const mean = v.reduce((s, y) => s + y, 0) / n;
+                const sd = Math.sqrt(v.reduce((s, y) => s + (y - mean) * (y - mean), 0) / n);
+                out.ys.push(kind === 'std' ? sd : mean); out.sds.push(sd); out.ns.push(n);
+            });
+            return out;
+        }
+        // Spread series sharing an X value across a small band so their markers
+        // and error bars don't sit on top of each other (as in the app).
+        function dodgeBand(entries) {
+            const xs = Array.from(new Set([].concat(...entries.map(e => e.raw.x)))).sort((a, b) => a - b);
+            if (xs.length < 1) return 0;
+            const gaps = [];
+            for (let i = 1; i < xs.length; i++) gaps.push(xs[i] - xs[i - 1]);
+            gaps.sort((a, b) => a - b);
+            const gap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0;
+            const span = xs[xs.length - 1] - xs[0];
+            return Math.max(gap * 0.6, span * 0.03) || (Math.abs(xs[0]) * 0.02 || 1);
+        }
+
+        function buildTraces(kind) {
+            const withRaw = baseTraces.filter(b => b.raw);
+            const dodgeOn = document.getElementById('agg-dodge').checked;
+            const band = (kind !== 'none' && dodgeOn && withRaw.length > 1) ? dodgeBand(withRaw) : 0;
+            const xLbl = axisTitle('xaxis'), yLbl = axisTitle('yaxis');
+            return baseTraces.map(b => {
+                if (!b.raw) return clone(b.tr);
+                const t = clone(b.tr);
+                delete t.error_y; delete t.customdata;
+                if (kind === 'none') {
+                    t.x = b.raw.x; t.y = b.raw.y; t.text = b.raw.text;
+                    if (b.snapKind === 'none') {
+                        // A raw trace as shared: keep its own hover (tags etc).
+                        t.customdata = b.tr.customdata; t.mode = b.rawMode;
+                    } else {
+                        t.mode = 'markers';
+                        t.hovertemplate = '%{text}<br>' + xLbl + ': %{x}<br>' + yLbl + ': %{y}'
+                            + HINT + '<extra>' + (t.name || '') + '</extra>';
+                    }
+                    return t;
+                }
+                const agg = aggregateByX(b.raw.x, b.raw.y, kind);
+                const i = withRaw.indexOf(b), n = withRaw.length;
+                const dodge = band && n > 1 ? ((i / (n - 1)) - 0.5) * band : 0;
+                t.x = agg.xs.map(v => v + dodge);
+                t.y = agg.ys;
+                delete t.text;   // a bucket, not a sample: not clickable
+                t.customdata = agg.xs.map((xv, k) => [agg.ns[k], xv]);
+                t.mode = document.getElementById('agg-line').checked ? 'lines+markers' : 'markers';
+                t.hovertemplate = xLbl + ': %{customdata[1]}<br>' + kind + '(' + yLbl + '): %{y}'
+                    + '<br>n: %{customdata[0]}<extra>' + (t.name || '') + '</extra>';
+                if (kind === 'mean' && document.getElementById('err-bars').checked) {
+                    const color = (t.marker && t.marker.color) || undefined;
+                    t.error_y = { type: 'data', array: agg.sds, visible: true, color: color, thickness: 1.2, width: 4 };
+                }
+                return t;
+            });
+        }
+
+        function render() {
+            const kind = canAggregate ? document.getElementById('agg').value : snapshotKind;
+            const data = buildTraces(kind);
+            data.forEach(tr => {
+                if (typeof tr.hovertemplate !== 'string') return;
+                // Plots shared before click-through existed had the hint stripped.
+                if (sourcePath && Array.isArray(tr.text) && !HINT_RE.test(tr.hovertemplate)) {
+                    tr.hovertemplate = tr.hovertemplate.replace('<extra>', HINT + '<extra>');
+                } else if (!sourcePath || !Array.isArray(tr.text)) {
+                    tr.hovertemplate = tr.hovertemplate.replace(HINT_RE, '');
+                }
+            });
+            const layout = clone(baseLayout);
+            // The sharer's axis limits were chosen for what they were looking at.
+            // Showing something else (e.g. raw points of a Mean plot, or std values)
+            // can fall outside them, so let the view refit.
+            if (kind !== snapshotKind) {
+                ['xaxis', 'yaxis'].forEach(ax => {
+                    if (layout[ax]) { delete layout[ax].range; layout[ax].autorange = true; }
+                });
+            }
+            document.querySelectorAll('.agg-opt').forEach(el => { el.style.display = kind === 'none' ? 'none' : ''; });
+            document.getElementById('err-wrap').style.display = kind === 'mean' ? '' : 'none';
+            return Plotly.react(gd, data, layout, { responsive: true, displaylogo: false });
+        }
+
+        if (canAggregate) {
+            document.getElementById('controls').style.display = 'flex';
+            ['agg', 'agg-line', 'err-bars', 'agg-dodge'].forEach(id =>
+                document.getElementById(id).addEventListener('change', render));
+        }
+
+        render().then(() => {
             if (!sourcePath) return;
             // Same as clicking a point in the app: open the comparison it came
             // from, narrowed to the clicked sample. Resolved against THIS page's
             // origin, so it works on whatever host the recipient reached.
-            // Mean/Std points carry no `text` (they stand for a bucket of samples)
-            // and are ignored.
+            // Aggregated points carry no `text` and are ignored.
             gd.on('plotly_hover', (ev) => {
                 const p = ev && ev.points && ev.points[0];
                 gd.style.cursor = (p && p.text) ? 'pointer' : '';
