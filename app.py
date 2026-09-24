@@ -465,6 +465,14 @@ class CustomField(db.Model):
     submission_id = db.Column(db.Integer, db.ForeignKey('submission.id'), nullable=True)
     sample_name = db.Column(db.String(100), nullable=True)  # Sample name for submission custom fields
 
+    # This table grows as samples x fields x submissions and nearly every query
+    # on it filters by submission or by sample; without these each one was a full
+    # scan. Existing databases get them from check_and_migrate_db().
+    __table_args__ = (
+        db.Index('ix_custom_field_submission_name', 'submission_id', 'name'),
+        db.Index('ix_custom_field_sample_id', 'sample_id'),
+    )
+
     def get_value(self):
         """Helper to get the appropriate value based on type"""
         if self.field_type in ['scalar', 'metric'] and self.value_float is not None:
@@ -1909,18 +1917,18 @@ def edit_leaderboard(project_name, leaderboard_id):
         return redirect(url_for('edit_leaderboard', project_name=project_name, leaderboard_id=leaderboard_id, _anchor=request.form.get('active_tab')))
         
     # Get available fields for mapping (sampling)
-    fields_set = set()
-    
-    # 1. Check GT data
+    #
+    # Everything below needs only field NAMES. Loading CustomField rows instead
+    # meant samples x fields x submissions ORM objects (JSON/text blobs included)
+    # on every page open, which is what made this page crawl on leaderboards with
+    # many submissions. Each lookup is now a DISTINCT query over the columns it
+    # actually uses; the sample ids stay a subquery rather than a bound list.
     dataset_ids = [d.id for d in leaderboard.datasets] if leaderboard.datasets else [leaderboard.dataset_id]
-    samples = Sample.query.filter(Sample.dataset_id.in_(dataset_ids)).all()
-    if any(s.histogram_data for s in samples):
-        fields_set.add('gt_histogram')
-    
-    # 2. Check Submission data
-    submissions = Submission.query.filter_by(leaderboard_id=leaderboard.id, processing_status='Processed').all()
-    sub_ids = [sub.id for sub in submissions]
-    
+    sample_ids = db.session.query(Sample.id).filter(Sample.dataset_id.in_(dataset_ids)).scalar_subquery()
+
+    all_submissions = Submission.query.filter_by(leaderboard_id=leaderboard.id).order_by(Submission.id).all()
+    sub_ids = [sub.id for sub in all_submissions if sub.processing_status == 'Processed']
+
     # Separate fields for UI datalists
     # No hardcoded entries: the row's source already adds the gt_/sub_ prefix, so
     # the old 'sub_peak' / 'sub_entropy' saved as sub_sub_peak / sub_sub_entropy,
@@ -1928,48 +1936,55 @@ def edit_leaderboard(project_name, leaderboard_id):
     # suggestion below is derived from what actually exists.
     dataset_fields_set = set()
     submission_fields_set = set()
-    
-    # 3. Check Custom Fields (Database)
-    # GT Custom Fields
-    # Dataset rows only — submission rows also carry sample_id and would otherwise
-    # be offered as ground-truth fields (the same leak the context builder had).
-    dataset_custom_fields = CustomField.query.filter(
-        CustomField.sample_id.in_([s.id for s in samples]),
-        CustomField.submission_id.is_(None)).all()
-    for cf in dataset_custom_fields:
-        if cf.field_type in ['metric', 'scalar', 'image']:
-            dataset_fields_set.add(cf.name)
-            
-    # Submission Custom Fields
-    if sub_ids:
-        submission_custom_fields = CustomField.query.filter(CustomField.submission_id.in_(sub_ids)).all()
-        for cf in submission_custom_fields:
-            if cf.field_type in ['metric', 'scalar', 'image']:
-                submission_fields_set.add(cf.name)
+
+    # GT custom fields. Dataset rows only — submission rows also carry sample_id
+    # and would otherwise be offered as ground-truth fields (the same leak the
+    # context builder had).
+    for (name,) in db.session.query(CustomField.name).filter(
+            CustomField.sample_id.in_(sample_ids),
+            CustomField.submission_id.is_(None),
+            CustomField.field_type.in_(['metric', 'scalar', 'image'])).distinct():
+        dataset_fields_set.add(name)
+
+    # Submission custom fields, as (submission_id, name, field_type) — one query
+    # that also feeds the metric-direction list and the GT-source lists below.
+    sub_field_names = db.session.query(
+        CustomField.submission_id, CustomField.name, CustomField.field_type
+    ).filter(
+        CustomField.submission_id.in_([sub.id for sub in all_submissions]),
+        CustomField.field_type.in_(['metric', 'scalar', 'image'])
+    ).distinct().all() if all_submissions else []
+    processed_ids = set(sub_ids)
+    for sid, name, _ftype in sub_field_names:
+        if sid in processed_ids:
+            submission_fields_set.add(name)
 
     # Raw histogram counts are exposed to metrics as gt_hist / sub_hist_<folder>
     # (see MetricContextBuilder), so the mapping autocomplete has to offer them.
     # The dataset side is a 'histogram' CustomField named 'hist' — filtered out of
     # the loop above — or a row in the legacy HistogramData table.
-    has_gt_hist = bool(CustomField.query.filter(
-        CustomField.sample_id.in_([s.id for s in samples]),
+    has_gt_hist = db.session.query(CustomField.id).filter(
+        CustomField.sample_id.in_(sample_ids),
         CustomField.field_type == 'histogram',
         CustomField.name == 'hist'
-    ).first())
-    if not has_gt_hist and samples:
-        has_gt_hist = bool(HistogramData.query.filter(
-            HistogramData.sample_id.in_([s.id for s in samples])).first())
+    ).first() is not None
+    if not has_gt_hist:
+        has_gt_hist = db.session.query(HistogramData.id).filter(
+            HistogramData.sample_id.in_(sample_ids)).first() is not None
     if has_gt_hist:
         dataset_fields_set.add('hist')          # -> gt_hist
         dataset_fields_set.add('entropy')       # -> gt_entropy (derived from it)
 
-    # The submission side lives on disk, not in CustomField, so scan the folders.
-    for sub in Submission.query.filter_by(leaderboard_id=leaderboard.id).all():
+    # The submission side lives on disk, not in CustomField, so scan the folders
+    # (once per submission; the GT-source lists below reuse the result).
+    sub_hist_folders = {}
+    for sub in all_submissions:
         sub_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(sub.id))
-        for folder in _hist_folders(sub_dir):
+        sub_hist_folders[sub.id] = _hist_folders(sub_dir)
+        for folder in sub_hist_folders[sub.id]:
             submission_fields_set.add(f'hist_{folder}')       # -> sub_hist_<folder>
             submission_fields_set.add(f'entropy_{folder}')    # -> sub_entropy_<folder>
-                
+
     # 4. Include already defined Leaderboard Metrics (to allow chaining/dependencies)
     per_sample_metrics = set([])
     aggregated_metrics_list = set([])
@@ -2041,23 +2056,18 @@ def edit_leaderboard(project_name, leaderboard_id):
         # Use unique internal ID
         all_known_metrics.add(f"lm_{lm.id}")
     # Custom metrics from database (linked to this dataset/submissions)
-    # Similar logic to leaderboard_view discovery
-    dataset_custom_metrics = CustomField.query.filter(CustomField.sample_id.in_([s.id for s in samples]), CustomField.field_type == 'metric').all()
-    for cf in dataset_custom_metrics:
-        all_known_metrics.add(f'gt_{cf.name}') # Although leaderboard usually aggregates sub metrics? 
-        # Actually leaderboard.html only shows standard, dynamic, and sub-custom metrics. Not GT custom metrics usually (unless dynamic uses them).
-        # But let's stick to what's shown in leaderboard table loop.
-    
+    # Similar logic to leaderboard_view discovery. (No submission_id filter here,
+    # as before: the leaderboard table decides what it shows.)
+    for (name,) in db.session.query(CustomField.name).filter(
+            CustomField.sample_id.in_(sample_ids),
+            CustomField.field_type == 'metric').distinct():
+        all_known_metrics.add(f'gt_{name}')
+
     # Submission custom metrics
-    if sub_ids:
-        submission_custom_metrics = CustomField.query.filter(
-            CustomField.submission_id.in_(sub_ids), 
-            CustomField.field_type.in_(['metric', 'scalar'])
-        ).all()
-        for cf in submission_custom_metrics:
-            if not cf.name.startswith('lm_'):
-                all_known_metrics.add(cf.name)
-            
+    for sid, name, ftype in sub_field_names:
+        if sid in processed_ids and ftype in ('metric', 'scalar') and not name.startswith('lm_'):
+            all_known_metrics.add(name)
+
     sorted_metrics = sorted(list(all_known_metrics))
     current_directions = json.loads(leaderboard.metric_directions) if leaderboard.metric_directions else {}
     current_aggregation = json.loads(leaderboard.metric_aggregation) if leaderboard.metric_aggregation else {}
@@ -2070,27 +2080,23 @@ def edit_leaderboard(project_name, leaderboard_id):
     gt_source_fields = {}
     lm_friendly = {f"lm_{lm.id}": (lm.target_name or lm.global_metric.name)
                    for lm in leaderboard.leaderboard_metrics}
-    for sub in Submission.query.filter_by(leaderboard_id=leaderboard.id).order_by(Submission.id).all():
+    fields_by_sub = {}
+    for sid, name, ftype in sub_field_names:
+        if ftype in ('metric', 'scalar'):
+            fields_by_sub.setdefault(sid, set()).add(name)
+    for sub in all_submissions:
         gt_source_submissions.append({'id': sub.id, 'name': sub.name,
                                       'archived': bool(sub.is_archived)})
         names = set()
-        for cf in sub.custom_fields:
-            if cf.field_type not in ('metric', 'scalar'):
-                continue
+        for name in fields_by_sub.get(sub.id, ()):
             # Same here: offer the metric's readable name, not its lm_<id>.
-            if cf.name in lm_friendly:
-                names.add(lm_friendly[cf.name])
-            elif not re.fullmatch(r'lm_\d+', cf.name or ''):
-                names.add(cf.name)
+            if name in lm_friendly:
+                names.add(lm_friendly[name])
+            elif not re.fullmatch(r'lm_\d+', name or ''):
+                names.add(name)
         # Histogram folders are exposed as gt_entropy_<folder> (see
         # build_gt_source_context), so offer them under that name.
-        sub_folder = os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(sub.id))
-        try:
-            hist_folders = [f for f in os.listdir(sub_folder)
-                            if os.path.isdir(os.path.join(sub_folder, f))
-                            and (f.startswith('hist_') or f == 'raw_histogram')]
-        except OSError:
-            hist_folders = []
+        hist_folders = sub_hist_folders.get(sub.id, [])
         for f in hist_folders:
             names.add(f'entropy_{f}')
             names.add(f'hist_{f}')
@@ -7161,7 +7167,19 @@ def check_and_migrate_db():
                         print("Successfully added 'pooling_percentile'.")
                     except Exception as e:
                         print(f"Failed to add 'pooling_percentile': {e}")
-                
+
+                # --- 5. CustomField indexes (same names as CustomField.__table_args__) ---
+                # One-off cost on a large existing table; IF NOT EXISTS makes it a
+                # no-op afterwards.
+                try:
+                    cursor.execute("CREATE INDEX IF NOT EXISTS ix_custom_field_submission_name "
+                                   "ON custom_field (submission_id, name)")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS ix_custom_field_sample_id "
+                                   "ON custom_field (sample_id)")
+                    conn.commit()
+                except Exception as e:
+                    print(f"Migration error (custom_field indexes): {e}")
+
                 conn.close()
 
                 print("Database schema check complete.")

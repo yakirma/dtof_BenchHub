@@ -330,6 +330,10 @@
             }
             console.log("File read successfully, updating implementation field.");
             document.getElementById('metric-code').value = text;
+            // The editor is now the source of truth. The server prefers an attached
+            // file over the textarea, so leaving the file attached would silently
+            // save the file's original content over any edits made after loading.
+            document.getElementById('metric-file').value = '';
         };
         reader.onerror = function (err) {
             console.error("FileReader error:", err);
