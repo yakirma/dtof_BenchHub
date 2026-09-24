@@ -581,7 +581,7 @@ class SharedPlot(db.Model):
     # Plain ints, not FKs: the snapshot is self-contained, so deleting the source
     # leaderboard must not cascade into (or dangle) the shared link.
     leaderboard_id = db.Column(db.Integer, nullable=True)
-    source_url = db.Column(db.String(1000), nullable=True)
+    source_url = db.Column(db.String(8000), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     created_by = db.Column(db.String(100), nullable=True)
     view_count = db.Column(db.Integer, default=0, nullable=False)
@@ -7899,6 +7899,25 @@ def _one_shot_viz_cache_wipe():
 SHARED_PLOT_MAX_BYTES = 20 * 1024 * 1024   # a figure carries its data; cap runaway payloads
 
 
+def _shared_plot_source_path(url):
+    """
+    Reduce a shared plot's source URL to this app's path + query.
+
+    The browser reports its own absolute URL, and that often names a host only
+    the sharer can reach (localhost, a VPN name). The path is what matters: the
+    shared page resolves it against whatever host the recipient opened the link
+    on. Anything that isn't a same-app path (another scheme, "//host") yields
+    None, so the link can never be turned into a redirect elsewhere.
+    """
+    if not url:
+        return None
+    parts = urllib.parse.urlsplit(str(url))
+    path = parts.path or ''
+    if not path.startswith('/') or path.startswith('//'):
+        return None
+    return path + ('?' + parts.query if parts.query else '')
+
+
 @app.route('/<project_name>/shared_plots/create', methods=['POST'])
 def create_shared_plot(project_name):
     """Publish the figure the plot panel is currently showing at /p/<token>."""
@@ -7922,7 +7941,9 @@ def create_shared_plot(project_name):
         figure_json=json.dumps({'data': figure['data'], 'layout': figure.get('layout') or {}}),
         project_id=project.id if project else None,
         leaderboard_id=leaderboard_id,
-        source_url=(payload.get('source_url') or '')[:1000] or None,
+        # compare_ids lists every compared submission, so a long comparison's URL
+        # easily passes 1000 chars; a truncated one would open the wrong page.
+        source_url=_shared_plot_source_path((payload.get('source_url') or '')[:8000]),
         created_by=get_current_git_author() or None,
     )
     db.session.add(shared)
@@ -7944,8 +7965,10 @@ def view_shared_plot(token):
     shared.view_count = (shared.view_count or 0) + 1
     shared.last_viewed_at = datetime.utcnow()
     db.session.commit()
+    # Older rows hold the absolute URL; normalise at read time too.
     return render_template('shared_plot_view.html', shared=shared,
-                           figure=json.loads(shared.figure_json))
+                           figure=json.loads(shared.figure_json),
+                           source_path=_shared_plot_source_path(shared.source_url))
 
 
 @app.route('/<project_name>/shared_plots')

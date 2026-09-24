@@ -28,7 +28,7 @@
             <h1>{{ shared.title }}</h1>
             <div class="meta">
                 Snapshot taken {{ shared.created_at.strftime('%Y-%m-%d %H:%M') }} UTC{% if shared.created_by %} by {{ shared.created_by }}{% endif %}
-                · interactive: zoom, pan, hover, click legend entries to toggle
+                · interactive: zoom, pan, hover, click legend entries to toggle{% if source_path %}, click a point to open its sample{% endif %}
             </div>
         </header>
         <div id="plot"></div>
@@ -39,7 +39,43 @@
         const layout = Object.assign({}, fig.layout || {}, { autosize: true });
         delete layout.width;
         delete layout.height;
-        Plotly.newPlot('plot', fig.data || [], layout, { responsive: true, displaylogo: false });
+        // Path (no host) of the comparison the plot was shared from; null for
+        // plots whose source is unknown.
+        const sourcePath = {{ source_path|tojson }};
+        const HINT = '<br><span style="font-size:10px">click to open sample ↗</span>';
+        const HINT_RE = /<br><span[^>]*>click to open sample[^<]*<\/span>/;
+        (fig.data || []).forEach(tr => {
+            if (typeof tr.hovertemplate !== 'string') return;
+            // Plots shared before click-through existed had the hint stripped.
+            if (sourcePath && Array.isArray(tr.text) && !HINT_RE.test(tr.hovertemplate)) {
+                tr.hovertemplate = tr.hovertemplate.replace('<extra>', HINT + '<extra>');
+            } else if (!sourcePath) {
+                tr.hovertemplate = tr.hovertemplate.replace(HINT_RE, '');
+            }
+        });
+        const gd = document.getElementById('plot');
+        Plotly.newPlot(gd, fig.data || [], layout, { responsive: true, displaylogo: false }).then(() => {
+            if (!sourcePath) return;
+            // Same as clicking a point in the app: open the comparison it came
+            // from, narrowed to the clicked sample. Resolved against THIS page's
+            // origin, so it works on whatever host the recipient reached.
+            // Mean/Std points carry no `text` (they stand for a bucket of samples)
+            // and are ignored.
+            gd.on('plotly_hover', (ev) => {
+                const p = ev && ev.points && ev.points[0];
+                gd.style.cursor = (p && p.text) ? 'pointer' : '';
+            });
+            gd.on('plotly_unhover', () => { gd.style.cursor = ''; });
+            gd.on('plotly_click', (ev) => {
+                const p = ev && ev.points && ev.points[0];
+                if (!p || !p.text) return;
+                const url = new URL(sourcePath, window.location.origin);
+                url.searchParams.set('search_query', p.text);
+                url.searchParams.set('per_page', '1');
+                url.searchParams.set('page', '1');
+                window.open(url.toString(), '_blank', 'noopener');
+            });
+        });
     </script>
 {% else %}
     <div class="gone">
