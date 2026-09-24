@@ -107,14 +107,25 @@
         function syncSeriesBoxes() {
             seriesList.forEach(e => { if (e.cb) e.cb.checked = e.idx.some(i => visible[i]); });
         }
+        // Shared from Toggle mode: one field at a time (radios), and the other
+        // fields' traces are left out of the legend rather than greyed in it.
+        const toggleMode = !!(baseLayout.meta && baseLayout.meta.yAxis
+            && baseLayout.meta.yAxis.showMode === 'toggle') && seriesList.length > 1;
         if (seriesList.length > 1) {
             const list = document.getElementById('series-list');
             seriesList.forEach(e => {
                 const lab = document.createElement('label');
                 e.cb = document.createElement('input');
-                e.cb.type = 'checkbox';
+                e.cb.type = toggleMode ? 'radio' : 'checkbox';
+                if (toggleMode) e.cb.name = 'series';
                 e.cb.addEventListener('change', () => {
-                    e.idx.forEach(i => { visible[i] = e.cb.checked; });
+                    if (toggleMode) {
+                        if (!e.cb.checked) return;
+                        seriesList.forEach(o => o.idx.forEach(i => { visible[i] = (o === e); }));
+                        syncSeriesBoxes();
+                    } else {
+                        e.idx.forEach(i => { visible[i] = e.cb.checked; });
+                    }
                     render();
                 });
                 lab.appendChild(e.cb);
@@ -159,7 +170,7 @@
             const xLbl = axisTitle('xaxis'), yLbl = axisTitle('yaxis');
             return baseTraces.map((b, i) => {
                 const t = buildOne(b, kind, band, withRaw, xLbl, yLbl);
-                t.visible = visible[i] ? true : 'legendonly';
+                t.visible = visible[i] ? true : (toggleMode && b.tr.meta && b.tr.meta.series ? false : 'legendonly');
                 return t;
             });
         }

@@ -3749,11 +3749,33 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             // from the legend, and a shared link opens with it hidden.
             const yHidden = {};
             function visKeyOf(yKey) { return subIdOfKey(yKey) ? ALL_PREFIX + fieldNameOfKey(yKey) : yKey; }
+            // Named like the Y axis: the field's axis label first, then its legend
+            // alias, then its own name.
             function visLabelOf(yKey) {
                 const k = visKeyOf(yKey);
+                if (aliases[YAXIS_PREFIX + k]) return aliases[YAXIS_PREFIX + k];
                 if (aliases[k]) return aliases[k];
                 return subIdOfKey(yKey) ? labelFor(yKey) : qualifiedLabel(yKey);
             }
+            // Show mode with several fields: 'multiple' (checkboxes, any number on)
+            // or 'toggle' (radio buttons, exactly one field at a time). In toggle
+            // mode the legend names only the submission, since the field is implied.
+            let yShowMode = 'multiple';
+            let yToggleKey = null;
+            function activeToggleKey() {
+                const rows = visRows();
+                return rows.some(r => r.key === yToggleKey) ? yToggleKey : (rows[0] && rows[0].key);
+            }
+            function isToggleMode() { return yShowMode === 'toggle' && visRows().length > 1; }
+            function isFieldHidden(k) { return isToggleMode() ? k !== activeToggleKey() : !!yHidden[k]; }
+            // Toggle-mode legend alias: one per submission, applied to every field.
+            const SUBALIAS_PREFIX = 'subalias::';
+            function submissionLegendName(subId) {
+                return aliases[SUBALIAS_PREFIX + subId] || submissionMeta(subId).label
+                    || (fieldByKey('sub::' + subId) || {}).category || ('Submission ' + subId);
+            }
+            // ...and one per cluster value (the field-free part of its alias key).
+            const CLUSTERALL_PREFIX = 'cluster::*||';
             // Per-field Y axis label: replaces the field's name in the Y axis title
             // (blank = the field name). Kept in the shared alias map under its own
             // prefix, so it follows the same session/panel sync as legend aliases.
@@ -3775,14 +3797,36 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 list.innerHTML = '';
                 if (rows.length < 2) { row.style.setProperty('display', 'none', 'important'); return; }
                 row.style.removeProperty('display');
+                const toggle = isToggleMode();
+                const mode = document.createElement('select');
+                mode.className = 'form-select form-select-sm w-auto';
+                mode.title = 'Multiple: show any combination of fields. Toggle: one field at a time, legend by submission.';
+                mode.innerHTML = '<option value="multiple">Multiple</option><option value="toggle">Toggle</option>';
+                mode.value = yShowMode;
+                mode.addEventListener('change', () => {
+                    yShowMode = mode.value;
+                    buildYVisibility();
+                    // Legend-label rows differ per mode (per series vs per submission).
+                    if (q('.sp-labels-panel') && q('.sp-labels-panel').style.display !== 'none') buildLabelsEditor();
+                    schedulePlot();
+                });
+                list.appendChild(mode);
+                const radioName = 'sp-yvis-' + Math.random().toString(36).slice(2);
+                const active = activeToggleKey();
                 rows.forEach(entry => {
                     const lab = document.createElement('label');
                     lab.className = 'form-check form-check-inline m-0 d-inline-flex align-items-center gap-1';
                     lab.title = entry.label;
                     const cb = document.createElement('input');
-                    cb.type = 'checkbox'; cb.className = 'form-check-input m-0';
-                    cb.checked = !yHidden[entry.key];
-                    cb.addEventListener('change', () => { yHidden[entry.key] = !cb.checked; schedulePlot(); });
+                    cb.type = toggle ? 'radio' : 'checkbox'; cb.className = 'form-check-input m-0';
+                    if (toggle) {
+                        cb.name = radioName;
+                        cb.checked = entry.key === active;
+                        cb.addEventListener('change', () => { if (cb.checked) { yToggleKey = entry.key; schedulePlot(); } });
+                    } else {
+                        cb.checked = !yHidden[entry.key];
+                        cb.addEventListener('change', () => { yHidden[entry.key] = !cb.checked; schedulePlot(); });
+                    }
                     const txt = document.createElement('span');
                     txt.className = 'text-truncate'; txt.style.maxWidth = '220px';
                     txt.textContent = entry.label;
@@ -3938,9 +3982,52 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 }
                 const hdr = document.createElement('div');
                 hdr.className = 'fw-bold small text-muted mt-2 mb-1';
-                hdr.textContent = clusterRows.length
-                    ? 'Legend labels (per cluster)' : 'Legend labels (per Y series)';
+                const toggle = isToggleMode();
+                hdr.textContent = toggle
+                    ? (clusterRows.length ? 'Legend labels (per cluster, all fields)' : 'Legend labels (per submission, all fields)')
+                    : (clusterRows.length ? 'Legend labels (per cluster)' : 'Legend labels (per Y series)');
                 list.appendChild(hdr);
+                const aliasRow = (text, key, placeholder) => {
+                    const line = document.createElement('div');
+                    line.className = 'd-flex align-items-center gap-2 mb-1';
+                    const span = document.createElement('span');
+                    span.className = 'small text-muted text-truncate';
+                    span.style.minWidth = '170px'; span.style.maxWidth = '170px';
+                    span.textContent = text; span.title = text;
+                    const inp = document.createElement('input');
+                    inp.type = 'text'; inp.className = 'form-control form-control-sm';
+                    inp.placeholder = placeholder; inp.value = aliases[key] || '';
+                    inp.addEventListener('change', () => {
+                        const v = inp.value.trim();
+                        if (v) aliases[key] = v; else delete aliases[key];
+                        aliasesChanged();
+                    });
+                    line.appendChild(span); line.appendChild(inp);
+                    list.appendChild(line);
+                };
+                // Toggle mode names series by submission (or cluster) alone, so one
+                // alias covers that submission in every field.
+                if (toggle) {
+                    if (clusterRows.length) {
+                        Array.from(new Set(clusterRows.map(r => r.clusterValue))).forEach(cv =>
+                            aliasRow(cv, CLUSTERALL_PREFIX + cv, 'legend alias…'));
+                    }
+                    const subIds = [], others = [];
+                    getSelectedYKeys().forEach(k => {
+                        const sid = subIdOfKey(k);
+                        if (sid) { if (!clusterRows.length && subIds.indexOf(sid) < 0) subIds.push(sid); }
+                        else if (others.indexOf(k) < 0) others.push(k);
+                    });
+                    subIds.forEach(sid => {
+                        const label = submissionMeta(sid).label || ('Submission ' + sid);
+                        aliasRow(label, SUBALIAS_PREFIX + sid, 'legend alias…');
+                    });
+                    others.forEach(k => {
+                        const f0 = fieldByKey(k);
+                        aliasRow((f0 && f0.category) ? (f0.category + ': ' + f0.label) : rawLabel(k), k, 'legend alias…');
+                    });
+                    return;
+                }
 
                 // Clustering replaces the per-submission series with one entry per tag
                 // value, so those are what the legend shows and what is aliasable.
@@ -4343,7 +4430,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     // Labels editor can show what is being renamed.
                     raw: (multiY ? labelFor(sp.yKey) + ' — ' : '') + sp.clusterLabel,
                     count: sp.clusterCount || 1,
-                    inherited: sp.inheritedAlias || ''
+                    inherited: sp.inheritedAlias || '',
+                    clusterValue: sp.clusterLabel
                 }));
 
                 // The opacity sliders and the Labels rows are both derived from the
@@ -4408,7 +4496,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 // Same field across submissions collapses to one name here (the
                 // legend already distinguishes the submissions). Built from the
                 // fields that are shown, each by its per-field axis label.
-                const shownSpecs = specs.filter(sp => !yHidden[visKeyOf(sp.yKey)]);
+                const shownSpecs = specs.filter(sp => !isFieldHidden(visKeyOf(sp.yKey)));
                 const yLblBase = Array.from(new Set((shownSpecs.length ? shownSpecs : specs)
                     .map(sp => yAxisPartOf(sp.yKey)))).join(', ');
                 const yLblAuto = (yFnText && yFnText.trim() && yFnText.trim() !== 'x') ? (yFnText.trim() + '  [' + yLblBase + ']') : yLblBase;
@@ -4448,6 +4536,13 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     return i < 0 ? 0 : ((i / (n - 1)) - 0.5) * aggDodgeBand;
                 };
 
+                const toggleMode = isToggleMode();
+                // Identity a toggle-mode series is coloured and named by: its
+                // submission, its cluster, or (ground truth / tag) the field itself.
+                const toggleIdOf = (sp) => sp.clusterLabel ? 'c:' + sp.clusterLabel
+                    : (subIdOfKey(sp.yKey) ? 's:' + subIdOfKey(sp.yKey) : 'f:' + sp.yKey);
+                const toggleSeriesName = (yk) => subIdOfKey(yk) ? submissionLegendName(subIdOfKey(yk)) : visLabelOf(yk);
+                const toggleIds = Array.from(new Set(specs.map(toggleIdOf)));
                 const traces = [];
                 specs.forEach((spec, yIdx) => {
                     const yKey = spec.yKey;
@@ -4464,16 +4559,24 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         // An alias replaces the WHOLE entry, matching how qualifiedLabel
                         // treats field aliases: explicit cluster alias first, then one
                         // inherited from a member, else the composed cluster label.
+                        // Toggle mode: the field is implied by the Show radio, so the
+                        // legend names only the submission (or cluster), with one
+                        // alias per submission / cluster value covering every field.
                         const clusterAlias = spec.clusterLabel
-                            ? (aliases[spec.aliasKey] || spec.inheritedAlias || '')
+                            ? ((toggleMode && aliases[CLUSTERALL_PREFIX + spec.clusterLabel])
+                                || aliases[spec.aliasKey] || spec.inheritedAlias || '')
                             : '';
                         const base = spec.clusterLabel
                             ? (clusterAlias
-                                || (multiY ? labelFor(yKey) + ' — ' + spec.clusterLabel : spec.clusterLabel))
+                                || (multiY && !toggleMode ? labelFor(yKey) + ' — ' + spec.clusterLabel : spec.clusterLabel))
                             : null;
-                        if (gKey && multiY) { colorIdx = yIdx; markerIdx = gIdx; name = (base || qualifiedLabel(yKey) + spec.suffix) + ' — ' + g; }
+                        const seriesLabel = toggleMode ? toggleSeriesName(yKey) : qualifiedLabel(yKey);
+                        // In toggle mode a submission keeps its colour whichever field
+                        // is shown, so switching fields is comparable at a glance.
+                        const seriesIdx = toggleMode ? toggleIds.indexOf(toggleIdOf(spec)) : yIdx;
+                        if (gKey && multiY) { colorIdx = seriesIdx; markerIdx = gIdx; name = (base || seriesLabel + spec.suffix) + ' — ' + g; }
                         else if (gKey) { colorIdx = gIdx; markerIdx = gIdx; name = base ? base + ' — ' + g : String(g) + spec.suffix; }
-                        else if (multiY) { colorIdx = yIdx; markerIdx = yIdx; name = base || qualifiedLabel(yKey) + spec.suffix; }
+                        else if (multiY) { colorIdx = seriesIdx; markerIdx = seriesIdx; name = base || seriesLabel + spec.suffix; }
                         else { colorIdx = 0; markerIdx = 0; name = base || ('All' + spec.suffix); }
                         const color = COLORS[colorIdx % COLORS.length];
                         // Clustered series carry their own opacity key, so the slider
@@ -4557,7 +4660,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         // here starts hidden there.
                         const visKey = visKeyOf(yKey);
                         traces.slice(nBefore).forEach(t => {
-                            t.visible = yHidden[visKey] ? 'legendonly' : true;
+                            // Toggle mode drops the other fields from the legend too
+                            // (false, not legendonly): their entries would repeat
+                            // every submission name once per hidden field.
+                            t.visible = isFieldHidden(visKey) ? (toggleMode ? false : 'legendonly') : true;
                             t.meta = Object.assign({}, t.meta, {
                                 series: { key: visKey, label: visLabelOf(yKey), axisLabel: yAxisPartOf(yKey) }
                             });
@@ -4571,7 +4677,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 const zoomPct = isFinite(zoomRaw) ? Math.min(100, Math.max(0.001, zoomRaw)) : 100;
                 const allX = [], allY = [];
                 // Hidden series don't pull the auto-zoom toward themselves.
-                traces.filter(t => t.visible !== 'legendonly')
+                traces.filter(t => t.visible !== 'legendonly' && t.visible !== false)
                     .forEach(t => { t.x.forEach(v => allX.push(v)); t.y.forEach(v => allY.push(v)); });
                 const xRange = zoomRange(allX, zoomPct);
                 const yRange = zoomRange(allY, zoomPct);
@@ -4611,6 +4717,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     meta: {
                         yAxis: {
                             override: axisLabel.y.trim(),
+                            showMode: toggleMode ? 'toggle' : 'multiple',
                             fn: (yFnText && yFnText.trim() && yFnText.trim() !== 'x') ? yFnText.trim() : ''
                         }
                     }
