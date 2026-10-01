@@ -3358,6 +3358,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 </script>
 
 <!-- Dynamic Scalar X-Y Plot -->
+<script src="{{ url_for('static', filename='js/plot_csv.js') }}"></script>
 {% if submissions %}
 <script>
     (function () {
@@ -3498,7 +3499,6 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             gaps.sort((a, b) => a - b);
             return gaps[Math.floor(gaps.length / 2)];
         }
-        function csvCell(v) { v = (v == null ? '' : String(v)); return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
         function downloadBlob(text, name, type) {
             const blob = new Blob([text], { type: type + ';charset=utf-8' });
             const url = URL.createObjectURL(blob);
@@ -4219,11 +4219,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     return;
                 }
                 if (kind === 'csv') {
-                    const xt = (gd.layout.xaxis.title && gd.layout.xaxis.title.text) || 'x';
-                    const yt = (gd.layout.yaxis.title && gd.layout.yaxis.title.text) || 'y';
-                    const rows = [['sample', 'group', xt, yt]];
-                    gd.data.forEach(tr => (tr.x || []).forEach((xv, i2) => { rows.push([(tr.text && tr.text[i2]) || '', tr.name || '', xv, (tr.y && tr.y[i2])]); }));
-                    downloadBlob(rows.map(r => r.map(csvCell).join(',')).join('\r\n'), 'scalar_plot.csv', 'text/csv');
+                    // What is drawn now: shown series only, true X for Mean/Std,
+                    // plus field and submission columns (static/js/plot_csv.js,
+                    // shared with the public shared-plot page).
+                    PlotCsv.downloadCsv(gd, 'scalar_plot.csv');
                     return;
                 }
                 if (kind === 'json') {
@@ -4731,6 +4730,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     // How the Y title was composed, so the shared page can rebuild it
                     // when fields are toggled or the aggregation changes there.
                     meta: {
+                        // Submission names for meta.pointSubs ids (CSV export, here
+                        // and on the shared page, which has no other way to name them).
+                        submissionLabels: Object.fromEntries(Object.entries(SP.submissions || {})
+                            .map(([id, m]) => [id, (m && m.label) || id])),
                         yAxis: {
                             override: axisLabel.y.trim(),
                             showMode: toggleMode ? 'toggle' : 'multiple',

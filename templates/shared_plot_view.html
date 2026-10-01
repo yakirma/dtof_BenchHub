@@ -7,6 +7,7 @@
     {# Standalone on purpose: a share link must open for people who have never
        used the app, so it carries no navbar, project context or app scripts. #}
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script src="{{ url_for('static', filename='js/plot_csv.js') }}"></script>
     <style>
         html, body { height: 100%; margin: 0; }
         body {
@@ -21,6 +22,7 @@
         .controls { display: none; gap: 14px; align-items: center; flex-wrap: wrap;
                     font-size: 13px; margin-top: 8px; }
         .controls select { font: inherit; padding: 2px 4px; }
+        .controls button { font: inherit; padding: 2px 10px; cursor: pointer; }
         .controls label { display: inline-flex; gap: 4px; align-items: center; }
         .gone { max-width: 520px; margin: 18vh auto 0; padding: 0 20px; text-align: center; }
     </style>
@@ -33,6 +35,9 @@
             <div class="meta">
                 Snapshot taken {{ shared.created_at.strftime('%Y-%m-%d %H:%M') }} UTC{% if shared.created_by %} by {{ shared.created_by }}{% endif %}
                 · interactive: zoom, pan, hover, click legend entries to toggle{% if source_path %}, click a point to open its sample{% endif %}
+            </div>
+            <div class="controls" style="display:flex;">
+                <button type="button" id="dl-csv" title="Download the data currently shown (visible series, current aggregation) as CSV">⬇ Download CSV</button>
             </div>
             <div class="controls" id="controls">
                 <label>Aggregation
@@ -191,6 +196,8 @@
             if (!b.raw) return clone(b.tr);
             const t = clone(b.tr);
             delete t.error_y; delete t.customdata;
+            t.meta = Object.assign({}, t.meta);
+            if (kind === 'none') delete t.meta.aggKind; else t.meta.aggKind = kind;
             if (kind === 'none') {
                 t.x = b.raw.x; t.y = b.raw.y; t.text = b.raw.text;
                 if (b.raw.sub) t.meta = Object.assign({}, t.meta, { pointSubs: b.raw.sub });
@@ -273,6 +280,11 @@
             ['agg', 'agg-line', 'err-bars', 'agg-dodge'].forEach(id =>
                 document.getElementById(id).addEventListener('change', render));
         }
+
+        document.getElementById('dl-csv').addEventListener('click', () => {
+            const name = ({{ shared.title|tojson }} || 'shared_plot').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '');
+            PlotCsv.downloadCsv(gd, (name || 'shared_plot') + '.csv');
+        });
 
         render().then(() => {
             // Legend clicks toggle single traces; record them so a later
