@@ -120,8 +120,8 @@
         return tr.error_y;
     }
 
-    // One size for the legend, axis titles and plot title (the title a step
-    // larger). Blank / invalid = Plotly's defaults. Margins grow with the font
+    // One size for the legend, axis titles, axis tick numbers and plot title
+    // (the title a step larger). Blank / invalid = Plotly's defaults. Margins grow with the font
     // so the bottom legend and axis titles don't collide or clip.
     function applyFontSize(layout, size) {
         size = Number(size);
@@ -134,7 +134,11 @@
         };
         ['xaxis', 'yaxis'].forEach(ax => {
             if (!layout[ax]) layout[ax] = {};
-            layout[ax] = Object.assign({}, layout[ax], { title: withFont(layout[ax].title, size), automargin: true });
+            layout[ax] = Object.assign({}, layout[ax], {
+                title: withFont(layout[ax].title, size),
+                tickfont: Object.assign({}, layout[ax].tickfont, { size: size }),
+                automargin: true
+            });
         });
         if (layout.title) layout.title = withFont(layout.title, Math.round(size * 1.3));
         layout.legend = Object.assign({}, layout.legend, { font: Object.assign({}, (layout.legend || {}).font, { size: size }) });
