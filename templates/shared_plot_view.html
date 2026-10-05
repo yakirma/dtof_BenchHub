@@ -24,6 +24,8 @@
                     font-size: 13px; margin-top: 8px; }
         .controls select { font: inherit; padding: 2px 4px; }
         .controls button { font: inherit; padding: 2px 10px; cursor: pointer; }
+        .controls .lims { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+        .controls input.lim { font: inherit; width: 84px; padding: 1px 4px; }
         .controls label { display: inline-flex; gap: 4px; align-items: center; }
         .gone { max-width: 520px; margin: 18vh auto 0; padding: 0 20px; text-align: center; }
     </style>
@@ -39,6 +41,13 @@
             </div>
             <div class="controls" style="display:flex;">
                 <button type="button" id="dl-csv" title="Download the data currently shown (visible series, current aggregation) as CSV">⬇ Download CSV</button>
+                <span class="lims" title="Axis limits in data units. Leave a box blank for automatic; the placeholder shows the current view.">
+                    X <input type="number" step="any" class="lim" id="lim-x-min" placeholder="min">
+                    <input type="number" step="any" class="lim" id="lim-x-max" placeholder="max">
+                    Y <input type="number" step="any" class="lim" id="lim-y-min" placeholder="min">
+                    <input type="number" step="any" class="lim" id="lim-y-max" placeholder="max">
+                    <button type="button" id="lim-reset" title="Clear the limits and go back to the shared view">Reset</button>
+                </span>
                 <label title="Logarithmic Y axis. Values of zero or below can't be drawn on it and are left out."><input type="checkbox" id="log-y"> Log Y</label>
             </div>
             <div class="controls" id="controls">
@@ -237,6 +246,23 @@
             return t;
         }
 
+        // The view currently drawn, in data units (log/symlog converted back), so
+        // the limit boxes can show it and a single bound can be set on its own.
+        let yScaleNow = 'linear', symCNow = null;
+        const lastView = { x: null, y: null };
+        function readView() {
+            const fl = gd._fullLayout;
+            if (!fl || !fl.xaxis || !fl.yaxis) return;
+            lastView.x = fl.xaxis.range.map(Number);
+            const r = fl.yaxis.range.map(Number);
+            lastView.y = fl.yaxis.type === 'log' ? r.map(v => Math.pow(10, v))
+                : (yScaleNow === 'symlog' && symCNow) ? r.map(v => PlotScale.inv(v, symCNow)) : r;
+            ['x', 'y'].forEach(k => {
+                ['min', 'max'].forEach((m, i) => {
+                    document.getElementById('lim-' + k + '-' + m).placeholder = (+lastView[k][i]).toPrecision(4);
+                });
+            });
+        }
         function render() {
             const kind = canAggregate ? document.getElementById('agg').value : snapshotKind;
             const data = buildTraces(kind);
@@ -274,6 +300,21 @@
                     if (layout[ax]) { delete layout[ax].range; layout[ax].autorange = true; }
                 });
             }
+            // User limits (data units), converted to what each axis uses. A blank
+            // bound takes the value currently displayed, so one box can be set alone.
+            yScaleNow = yScale; symCNow = symC;
+            const yTo = yScale === 'log' ? (v => v > 0 ? Math.log10(v) : NaN)
+                : yScale === 'symlog' ? (v => PlotScale.f(v, symC)) : (v => v);
+            [['xaxis', 'x', v => v], ['yaxis', 'y', yTo]].forEach(([ax, k, to]) => {
+                const lo = parseFloat(document.getElementById('lim-' + k + '-min').value);
+                const hi = parseFloat(document.getElementById('lim-' + k + '-max').value);
+                if (!isFinite(lo) && !isFinite(hi)) return;
+                const cur = lastView[k];
+                const a = to(isFinite(lo) ? lo : (cur ? cur[0] : NaN));
+                const b = to(isFinite(hi) ? hi : (cur ? cur[1] : NaN));
+                if (!isFinite(a) || !isFinite(b) || a === b) return;   // e.g. a bound <= 0 on a log axis
+                layout[ax] = Object.assign({}, layout[ax], { range: [Math.min(a, b), Math.max(a, b)], autorange: false });
+            });
             if (symC) {
                 // Label the transformed axis in real values. Ticks span the shown
                 // data (with error bars); Plotly only draws those inside the view.
@@ -307,7 +348,7 @@
             }
             document.querySelectorAll('.agg-opt').forEach(el => { el.style.display = kind === 'none' ? 'none' : ''; });
             document.getElementById('err-wrap').style.display = kind === 'mean' ? '' : 'none';
-            return Plotly.react(gd, data, layout, { responsive: true, displaylogo: false });
+            return Plotly.react(gd, data, layout, { responsive: true, displaylogo: false }).then(readView);
         }
 
         if (canAggregate) {
@@ -322,7 +363,15 @@
             PlotCsv.downloadCsv(gd, (name || 'shared_plot') + '.csv');
         });
 
+        document.querySelectorAll('input.lim').forEach(el => el.addEventListener('change', render));
+        document.getElementById('lim-reset').addEventListener('click', () => {
+            document.querySelectorAll('input.lim').forEach(el => { el.value = ''; });
+            render();
+        });
+
         render().then(() => {
+            // Keep the placeholders on the view after mouse zoom / pan / reset.
+            gd.on('plotly_relayout', readView);
             // Legend clicks toggle single traces; record them so a later
             // re-render (aggregation change) keeps them, and mirror them in Show.
             gd.on('plotly_restyle', () => {
