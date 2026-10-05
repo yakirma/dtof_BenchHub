@@ -48,8 +48,10 @@
                     <input type="number" step="any" class="lim" id="lim-y-max" placeholder="max">
                     <button type="button" id="lim-reset" title="Clear the limits and go back to the shared view">Reset</button>
                 </span>
-                <label title="Font size of the legend, axis titles, axis tick numbers and plot title (the title a little larger). Blank = as shared.">Font
-                    <input type="number" class="lim" id="font-size" min="6" max="48" step="1" style="width:56px;"></label>
+                <label title="Font size of the legend, axis titles, axis tick numbers and plot title (the title a little larger). ↺ = as shared.">Font
+                    <input type="range" id="font-size" min="6" max="40" step="1" value="12" style="width:120px;">
+                    <span id="font-size-val" style="min-width:40px;">auto</span>
+                    <button type="button" id="font-size-reset" title="Back to the size it was shared with">↺</button></label>
                 <label title="Logarithmic Y axis. Values of zero or below can't be drawn on it and are left out."><input type="checkbox" id="log-y"> Log Y</label>
             </div>
             <div class="controls" id="controls">
@@ -350,7 +352,7 @@
             }
             document.querySelectorAll('.agg-opt').forEach(el => { el.style.display = kind === 'none' ? 'none' : ''; });
             document.getElementById('err-wrap').style.display = kind === 'mean' ? '' : 'none';
-            PlotScale.applyFontSize(layout, document.getElementById('font-size').value);
+            if (fontTouched) PlotScale.applyFontSize(layout, document.getElementById('font-size').value);
             return Plotly.react(gd, data, layout, { responsive: true, displaylogo: false }).then(readView);
         }
 
@@ -361,9 +363,26 @@
         }
 
         document.getElementById('log-y').addEventListener('change', render);
-        // Starts at the size the plot was shared with (blank = Plotly default).
-        document.getElementById('font-size').value = (baseLayout.meta && baseLayout.meta.fontSize) || '';
-        document.getElementById('font-size').addEventListener('change', render);
+        // Starts at the size the plot was shared with; untouched on a plot shared
+        // without one, so it keeps Plotly's defaults until moved.
+        const fsEl = document.getElementById('font-size'), fsVal = document.getElementById('font-size-val');
+        const sharedFont = baseLayout.meta && baseLayout.meta.fontSize;
+        let fontTouched = false;
+        function showFont() {
+            const active = fontTouched || sharedFont;
+            fsVal.textContent = active ? fsEl.value + ' px' : 'auto';
+        }
+        fsEl.value = sharedFont || 12;
+        showFont();
+        let fontRaf = null;
+        fsEl.addEventListener('input', () => {
+            fontTouched = true; showFont();
+            if (fontRaf) cancelAnimationFrame(fontRaf);
+            fontRaf = requestAnimationFrame(() => { fontRaf = null; render(); });
+        });
+        document.getElementById('font-size-reset').addEventListener('click', () => {
+            fontTouched = false; fsEl.value = sharedFont || 12; showFont(); render();
+        });
         document.getElementById('dl-csv').addEventListener('click', () => {
             const name = ({{ shared.title|tojson }} || 'shared_plot').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '');
             PlotCsv.downloadCsv(gd, (name || 'shared_plot') + '.csv');
