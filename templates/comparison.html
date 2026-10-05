@@ -1292,11 +1292,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 </select>
                 <input type="number" step="any" class="form-control form-control-sm sp-lim-min" data-axis="y" placeholder="min" disabled>
                 <input type="number" step="any" class="form-control form-control-sm sp-lim-max" data-axis="y" placeholder="max" disabled>
-                <div class="form-check form-check-inline ms-2 me-0 text-nowrap" title="Logarithmic Y axis. Values of zero or below can't be drawn on it and are left out.">
+                <div class="form-check form-check-inline ms-2 me-0 text-nowrap" title="Logarithmic Y axis. If any shown value is zero or negative it becomes a symmetric log axis (linear near zero, log in both directions), so the negative half stays visible.">
                     <input class="form-check-input sp-log-y" type="checkbox">
                     <label class="form-check-label small">Log Y</label>
                 </div>
-                <span class="small text-warning text-nowrap sp-log-note"></span>
+                <span class="small text-muted text-nowrap sp-log-note"></span>
             </div>
         </div>
 
@@ -3364,6 +3364,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
 <!-- Dynamic Scalar X-Y Plot -->
 <script src="{{ url_for('static', filename='js/plot_csv.js') }}"></script>
+<script src="{{ url_for('static', filename='js/plot_scale.js') }}"></script>
 {% if submissions %}
 <script>
     (function () {
@@ -4203,7 +4204,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 const fl = plotDiv && plotDiv._fullLayout && plotDiv._fullLayout[ax];
                 const r = fl && fl.range;
                 if (!r) return null;
-                return fl.type === 'log' ? [Math.pow(10, +r[0]), Math.pow(10, +r[1])] : [Number(r[0]), Number(r[1])];
+                if (fl.type === 'log') return [Math.pow(10, +r[0]), Math.pow(10, +r[1])];
+                const m = plotDiv.layout && plotDiv.layout.meta;
+                if (axis === 'y' && m && m.yScale === 'symlog' && m.symC) return [PlotScale.inv(+r[0], m.symC), PlotScale.inv(+r[1], m.symC)];
+                return [Number(r[0]), Number(r[1])];
             }
             function axisLimitRange(axis, autoRange) {
                 const modeEl = limCtl(axis, 'mode');
@@ -4701,27 +4705,34 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 const zoomPct = isFinite(zoomRaw) ? Math.min(100, Math.max(0.001, zoomRaw)) : 100;
                 const allX = [], allY = [];
                 // Hidden series don't pull the auto-zoom toward themselves.
-                traces.filter(t => t.visible !== 'legendonly' && t.visible !== false)
-                    .forEach(t => { t.x.forEach(v => allX.push(v)); t.y.forEach(v => allY.push(v)); });
+                const shownTraces = traces.filter(t => t.visible !== 'legendonly' && t.visible !== false);
+                shownTraces.forEach(t => { t.x.forEach(v => allX.push(v)); t.y.forEach(v => allY.push(v)); });
                 const xRange = zoomRange(allX, zoomPct);
-                // Log Y: auto-zoom in log space (so the margin is a ratio, not a
-                // difference that would go negative), over the positive values only.
-                // Ranges stay in data units here; Plotly gets log10 units below.
+                // Y scale. Log Y is a true log axis when every shown value is
+                // positive; with any value <= 0 it becomes symlog (static/js/
+                // plot_scale.js), which keeps the negative half visible. Limits and
+                // placeholders stay in data units; toPlot/fromPlot convert to what
+                // Plotly's axis uses (log10 units, or symlog-transformed values).
                 const logY = !!(q('.sp-log-y') && q('.sp-log-y').checked);
-                const posY = logY ? allY.filter(v => v > 0) : allY;
-                const yRange = logY
-                    ? (r => r ? r.map(v => Math.pow(10, v)) : null)(zoomRange(posY.map(Math.log10), zoomPct))
-                    : zoomRange(allY, zoomPct);
+                const yScale = !logY ? 'linear' : (allY.some(v => v <= 0) ? 'symlog' : 'log');
+                const symC = yScale === 'symlog' ? PlotScale.chooseC(allY) : null;
+                if (symC) traces.forEach(t => PlotScale.applyToTrace(t, symC));
+                const toPlot = yScale === 'log' ? Math.log10 : yScale === 'symlog' ? (v => PlotScale.f(v, symC)) : (v => v);
+                const fromPlot = yScale === 'log' ? (v => Math.pow(10, v)) : yScale === 'symlog' ? (v => PlotScale.inv(v, symC)) : (v => v);
+                // Auto-zoom in plot units, so the margin is a ratio on log scales
+                // rather than a difference that could cross zero.
+                const yRangePlot = zoomRange(allY.map(toPlot), zoomPct);
+                const yRange = yRangePlot ? yRangePlot.map(fromPlot) : null;
                 const xFinal = axisLimitRange('x', xRange);
                 const yFinal = axisLimitRange('y', yRange);
-                // A manual/fixed limit of zero or below has no place on a log axis;
-                // fall back to the auto range rather than draw nothing.
-                const yPlotRange = !logY ? yFinal
-                    : (yFinal && yFinal[0] > 0 && yFinal[1] > 0 ? yFinal : yRange);
+                // A manual/fixed limit of zero or below has no place on a true log
+                // axis; fall back to the auto range rather than draw nothing.
+                const yPlotRange = (yFinal && (yScale !== 'log' || (yFinal[0] > 0 && yFinal[1] > 0)))
+                    ? yFinal.map(toPlot) : yRangePlot;
                 const logNote = q('.sp-log-note');
                 if (logNote) {
-                    const dropped = logY ? allY.length - posY.length : 0;
-                    logNote.textContent = dropped ? dropped + ' point' + (dropped === 1 ? '' : 's') + ' ≤ 0 not shown' : '';
+                    logNote.textContent = symC ? 'symmetric log (linear within ±' + PlotScale.fmt(symC) + ')' : '';
+                    logNote.title = symC ? 'Some values are zero or negative, which a log axis cannot show, so the axis is sign(y)·log10(1 + |y|/' + PlotScale.fmt(symC) + ').' : '';
                 }
                 [['x', xFinal], ['y', yFinal]].forEach((pair) => {
                     const axis = pair[0], r = pair[1];
@@ -4740,8 +4751,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     margin: { l: 65, r: 20, t: titleText ? 42 : 20, b: showLegend ? 96 : 55 },
                     title: titleText ? { text: titleText, x: 0.5, xanchor: 'center' } : undefined,
                     xaxis: Object.assign({ title: xLbl, zeroline: false }, xFinal ? { range: xFinal } : { autorange: true }),
-                    yaxis: Object.assign({ title: yLbl, zeroline: false, type: logY ? 'log' : 'linear' },
-                        yPlotRange ? { range: logY ? yPlotRange.map(Math.log10) : yPlotRange } : { autorange: true }),
+                    yaxis: Object.assign({ title: yLbl, zeroline: yScale === 'symlog', type: yScale === 'log' ? 'log' : 'linear' },
+                        yPlotRange ? { range: yPlotRange } : { autorange: true },
+                        // Symlog values are transformed, so label the axis in real values.
+                        symC && yPlotRange ? Object.assign({ tickmode: 'array' }, PlotScale.ticks(yPlotRange[0], yPlotRange[1], symC)) : {}),
                     showlegend: showLegend,
                     // Horizontal legend pinned to the BOTTOM OF THE CONTAINER (yref:
                     // 'container') so it sits below the x-axis title rather than
@@ -4758,6 +4771,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     meta: {
                         // Submission names for meta.pointSubs ids (CSV export, here
                         // and on the shared page, which has no other way to name them).
+                        yScale: yScale, symC: symC,
                         submissionLabels: Object.fromEntries(Object.entries(SP.submissions || {})
                             .map(([id, m]) => [id, (m && m.label) || id])),
                         yAxis: {

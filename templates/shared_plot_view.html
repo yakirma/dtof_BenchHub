@@ -8,6 +8,7 @@
        used the app, so it carries no navbar, project context or app scripts. #}
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <script src="{{ url_for('static', filename='js/plot_csv.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/plot_scale.js') }}"></script>
     <style>
         html, body { height: 100%; margin: 0; }
         body {
@@ -82,7 +83,9 @@
         // scatter/line traces ARE the samples; Mean/Std traces carry them in
         // meta.raw (plots shared before that was added don't, and nor do box
         // traces — those are always drawn exactly as shared).
-        const baseTraces = (fig.data || []).map(tr => {
+        // A plot shared on a symlog axis holds transformed Y values; start from
+        // the real ones (this page applies its own scale below).
+        const baseTraces = (fig.data || []).map(PlotScale.restoreTrace).map(tr => {
             let raw = null, rawMode = 'markers';
             if (tr.meta && tr.meta.raw) {
                 raw = tr.meta.raw;
@@ -94,8 +97,10 @@
         });
         const snapshotKind = (baseTraces.find(b => b.snapKind !== 'none') || { snapKind: 'none' }).snapKind;
         // Starts as shared: on if the plot was shared with a log Y axis.
-        const snapshotLogY = !!(baseLayout.yaxis && baseLayout.yaxis.type === 'log');
-        document.getElementById('log-y').checked = snapshotLogY;
+        const snapMeta = baseLayout.meta || {};
+        const snapshotScale = snapMeta.yScale || ((baseLayout.yaxis && baseLayout.yaxis.type === 'log') ? 'log' : 'linear');
+        const snapshotC = snapMeta.symC || null;
+        document.getElementById('log-y').checked = snapshotScale !== 'linear';
         const canAggregate = baseTraces.some(b => b.raw);
 
         // Per-trace visibility, starting from how the plot was shared: series
@@ -250,14 +255,36 @@
             // series they had hidden) can fall outside them, so let the view refit.
             const shownNow = (i) => visible[i] && !(toggleMode && baseTraces[i].tr.meta && baseTraces[i].tr.meta.series
                 && baseTraces[i].tr.meta.series.key !== activeKey);
+            // Y scale, decided the same way as in the app: a true log axis when
+            // every shown value is positive, symlog when any is zero or negative.
             const logY = document.getElementById('log-y').checked;
-            layout.yaxis = Object.assign({}, layout.yaxis, { type: logY ? 'log' : 'linear' });
-            // The shared range is in the shared axis's units (log10 for a log axis),
-            // so it is only reused when the scale matches too.
-            if (kind !== snapshotKind || logY !== snapshotLogY || snapshotVisible.some((v, i) => v !== shownNow(i))) {
+            const shownY = [].concat(...data.filter(t => t.visible === true && Array.isArray(t.y)).map(t => t.y))
+                .filter(v => isFinite(v));
+            const yScale = !logY ? 'linear' : (shownY.some(v => v <= 0) ? 'symlog' : 'log');
+            const symC = yScale === 'symlog' ? PlotScale.chooseC(shownY) : null;
+            if (symC) data.forEach(t => PlotScale.applyToTrace(t, symC));
+            layout.yaxis = Object.assign({}, layout.yaxis, { type: yScale === 'log' ? 'log' : 'linear', zeroline: yScale === 'symlog' });
+            delete layout.yaxis.tickmode; delete layout.yaxis.tickvals; delete layout.yaxis.ticktext;
+            // The shared range is in the shared axis's units (log10 for a log
+            // axis, transformed values for symlog), so it is only reused when the
+            // scale, and for symlog its threshold, match too.
+            const sameScale = yScale === snapshotScale && (yScale !== 'symlog' || symC === snapshotC);
+            if (kind !== snapshotKind || !sameScale || snapshotVisible.some((v, i) => v !== shownNow(i))) {
                 ['xaxis', 'yaxis'].forEach(ax => {
                     if (layout[ax]) { delete layout[ax].range; layout[ax].autorange = true; }
                 });
+            }
+            if (symC) {
+                // Label the transformed axis in real values. Ticks span the shown
+                // data (with error bars); Plotly only draws those inside the view.
+                let lo = 0, hi = 0;
+                data.filter(t => t.visible === true && Array.isArray(t.y)).forEach(t => t.y.forEach((v, i) => {
+                    const up = t.error_y && t.error_y.array ? t.error_y.array[i] || 0 : 0;
+                    const dn = t.error_y && t.error_y.arrayminus ? t.error_y.arrayminus[i] || 0 : 0;
+                    lo = Math.min(lo, v - dn); hi = Math.max(hi, v + up);
+                }));
+                const r = (layout.yaxis.range && !layout.yaxis.autorange) ? layout.yaxis.range : [lo - 0.1, hi + 0.1];
+                Object.assign(layout.yaxis, { tickmode: 'array' }, PlotScale.ticks(Math.min(r[0], lo), Math.max(r[1], hi), symC));
             }
             // Rebuild the Y title the way the app composed it: the axis labels of
             // the fields now shown, then the f(x) and the aggregation in effect

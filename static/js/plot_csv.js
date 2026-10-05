@@ -25,6 +25,10 @@
         const t = layout && layout[ax] && layout[ax].title;
         return (t && (typeof t === 'string' ? t : t.text)) || fallback;
     }
+    // Real values when the trace was put on a symlog axis (plot_scale.js keeps
+    // the originals in meta.symlog).
+    function realY(tr) { return (tr.meta && tr.meta.symlog) ? tr.meta.symlog.y : tr.y; }
+    function realErr(tr) { return (tr.meta && tr.meta.symlog) ? tr.meta.symlog.error_y : tr.error_y; }
     function isShown(tr) { return tr.visible === undefined || tr.visible === true; }
     // A Mean/Std trace: tagged by the app, or (older shares) recognisable by its
     // [n, trueX] customdata and the absence of per-sample text.
@@ -45,15 +49,16 @@
 
         if (aggTraces.length) {
             const kind = aggKindOf(aggTraces[0]);
-            const withStd = aggTraces.some(tr => tr.error_y && Array.isArray(tr.error_y.array));
+            const withStd = aggTraces.some(tr => { const e = realErr(tr); return e && Array.isArray(e.array); });
             const rows = [['series', 'field', xHead, kind, 'n'].concat(withStd ? ['std'] : [])];
             aggTraces.forEach(tr => {
-                (tr.y || []).forEach((yv, i) => {
+                (realY(tr) || []).forEach((yv, i) => {
                     const cd = Array.isArray(tr.customdata) ? tr.customdata[i] : null;
                     const n = Array.isArray(cd) ? cd[0] : '';
                     const trueX = Array.isArray(cd) ? cd[1] : (tr.x || [])[i];
                     const row = [tr.name || '', fieldOf(tr), trueX, yv, n];
-                    if (withStd) row.push(tr.error_y && tr.error_y.array ? tr.error_y.array[i] : '');
+                    const e = realErr(tr);
+                    if (withStd) row.push(e && e.array ? e.array[i] : '');
                     rows.push(row);
                 });
             });
@@ -69,7 +74,7 @@
                     tr.name || '', fieldOf(tr),
                     sid ? (subLabels[sid] || sid) : '',
                     Array.isArray(tr.text) ? (tr.text[i] || '') : '',
-                    xv, (tr.y || [])[i]
+                    xv, (realY(tr) || [])[i]
                 ]);
             });
         });
