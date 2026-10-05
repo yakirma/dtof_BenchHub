@@ -38,6 +38,7 @@
             </div>
             <div class="controls" style="display:flex;">
                 <button type="button" id="dl-csv" title="Download the data currently shown (visible series, current aggregation) as CSV">⬇ Download CSV</button>
+                <label title="Logarithmic Y axis. Values of zero or below can't be drawn on it and are left out."><input type="checkbox" id="log-y"> Log Y</label>
             </div>
             <div class="controls" id="controls">
                 <label>Aggregation
@@ -92,6 +93,9 @@
             return { tr: tr, raw: raw, rawMode: rawMode, snapKind: (tr.meta && tr.meta.aggKind) || 'none' };
         });
         const snapshotKind = (baseTraces.find(b => b.snapKind !== 'none') || { snapKind: 'none' }).snapKind;
+        // Starts as shared: on if the plot was shared with a log Y axis.
+        const snapshotLogY = !!(baseLayout.yaxis && baseLayout.yaxis.type === 'log');
+        document.getElementById('log-y').checked = snapshotLogY;
         const canAggregate = baseTraces.some(b => b.raw);
 
         // Per-trace visibility, starting from how the plot was shared: series
@@ -246,7 +250,11 @@
             // series they had hidden) can fall outside them, so let the view refit.
             const shownNow = (i) => visible[i] && !(toggleMode && baseTraces[i].tr.meta && baseTraces[i].tr.meta.series
                 && baseTraces[i].tr.meta.series.key !== activeKey);
-            if (kind !== snapshotKind || snapshotVisible.some((v, i) => v !== shownNow(i))) {
+            const logY = document.getElementById('log-y').checked;
+            layout.yaxis = Object.assign({}, layout.yaxis, { type: logY ? 'log' : 'linear' });
+            // The shared range is in the shared axis's units (log10 for a log axis),
+            // so it is only reused when the scale matches too.
+            if (kind !== snapshotKind || logY !== snapshotLogY || snapshotVisible.some((v, i) => v !== shownNow(i))) {
                 ['xaxis', 'yaxis'].forEach(ax => {
                     if (layout[ax]) { delete layout[ax].range; layout[ax].autorange = true; }
                 });
@@ -281,6 +289,7 @@
                 document.getElementById(id).addEventListener('change', render));
         }
 
+        document.getElementById('log-y').addEventListener('change', render);
         document.getElementById('dl-csv').addEventListener('click', () => {
             const name = ({{ shared.title|tojson }} || 'shared_plot').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '');
             PlotCsv.downloadCsv(gd, (name || 'shared_plot') + '.csv');

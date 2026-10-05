@@ -1292,6 +1292,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 </select>
                 <input type="number" step="any" class="form-control form-control-sm sp-lim-min" data-axis="y" placeholder="min" disabled>
                 <input type="number" step="any" class="form-control form-control-sm sp-lim-max" data-axis="y" placeholder="max" disabled>
+                <div class="form-check form-check-inline ms-2 me-0 text-nowrap" title="Logarithmic Y axis. Values of zero or below can't be drawn on it and are left out.">
+                    <input class="form-check-input sp-log-y" type="checkbox">
+                    <label class="form-check-label small">Log Y</label>
+                </div>
+                <span class="small text-warning text-nowrap sp-log-note"></span>
             </div>
         </div>
 
@@ -4191,10 +4196,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             // ---- per-axis limits ----
             const fixedRange = { x: null, y: null };
             function limCtl(axis, part) { return root.querySelector('.sp-lim-' + part + '[data-axis="' + axis + '"]'); }
+            // Limits are always handled in data units. A log axis reports its range
+            // in log10 units, so convert back.
             function snapshotRange(axis) {
                 const ax = axis === 'x' ? 'xaxis' : 'yaxis';
-                const r = plotDiv && plotDiv._fullLayout && plotDiv._fullLayout[ax] && plotDiv._fullLayout[ax].range;
-                return r ? [Number(r[0]), Number(r[1])] : null;
+                const fl = plotDiv && plotDiv._fullLayout && plotDiv._fullLayout[ax];
+                const r = fl && fl.range;
+                if (!r) return null;
+                return fl.type === 'log' ? [Math.pow(10, +r[0]), Math.pow(10, +r[1])] : [Number(r[0]), Number(r[1])];
             }
             function axisLimitRange(axis, autoRange) {
                 const modeEl = limCtl(axis, 'mode');
@@ -4695,9 +4704,25 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 traces.filter(t => t.visible !== 'legendonly' && t.visible !== false)
                     .forEach(t => { t.x.forEach(v => allX.push(v)); t.y.forEach(v => allY.push(v)); });
                 const xRange = zoomRange(allX, zoomPct);
-                const yRange = zoomRange(allY, zoomPct);
+                // Log Y: auto-zoom in log space (so the margin is a ratio, not a
+                // difference that would go negative), over the positive values only.
+                // Ranges stay in data units here; Plotly gets log10 units below.
+                const logY = !!(q('.sp-log-y') && q('.sp-log-y').checked);
+                const posY = logY ? allY.filter(v => v > 0) : allY;
+                const yRange = logY
+                    ? (r => r ? r.map(v => Math.pow(10, v)) : null)(zoomRange(posY.map(Math.log10), zoomPct))
+                    : zoomRange(allY, zoomPct);
                 const xFinal = axisLimitRange('x', xRange);
                 const yFinal = axisLimitRange('y', yRange);
+                // A manual/fixed limit of zero or below has no place on a log axis;
+                // fall back to the auto range rather than draw nothing.
+                const yPlotRange = !logY ? yFinal
+                    : (yFinal && yFinal[0] > 0 && yFinal[1] > 0 ? yFinal : yRange);
+                const logNote = q('.sp-log-note');
+                if (logNote) {
+                    const dropped = logY ? allY.length - posY.length : 0;
+                    logNote.textContent = dropped ? dropped + ' point' + (dropped === 1 ? '' : 's') + ' ≤ 0 not shown' : '';
+                }
                 [['x', xFinal], ['y', yFinal]].forEach((pair) => {
                     const axis = pair[0], r = pair[1];
                     const m = limCtl(axis, 'mode');
@@ -4715,7 +4740,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     margin: { l: 65, r: 20, t: titleText ? 42 : 20, b: showLegend ? 96 : 55 },
                     title: titleText ? { text: titleText, x: 0.5, xanchor: 'center' } : undefined,
                     xaxis: Object.assign({ title: xLbl, zeroline: false }, xFinal ? { range: xFinal } : { autorange: true }),
-                    yaxis: Object.assign({ title: yLbl, zeroline: false }, yFinal ? { range: yFinal } : { autorange: true }),
+                    yaxis: Object.assign({ title: yLbl, zeroline: false, type: logY ? 'log' : 'linear' },
+                        yPlotRange ? { range: logY ? yPlotRange.map(Math.log10) : yPlotRange } : { autorange: true }),
                     showlegend: showLegend,
                     // Horizontal legend pinned to the BOTTOM OF THE CONTAINER (yref:
                     // 'container') so it sits below the x-axis title rather than
@@ -4790,6 +4816,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             if (selCluster) selCluster.addEventListener('change', plot);
             q('.sp-add-filter').addEventListener('click', addFilterRow);
             q('.sp-show-tags').addEventListener('change', plot);
+            q('.sp-log-y').addEventListener('change', plot);
             q('.sp-box-points').addEventListener('change', plot);
             q('.sp-err-bars').addEventListener('change', plot);
             q('.sp-agg-line').addEventListener('change', plot);
