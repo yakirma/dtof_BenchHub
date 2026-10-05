@@ -48,6 +48,8 @@
                     <input type="number" step="any" class="lim" id="lim-y-max" placeholder="max">
                     <button type="button" id="lim-reset" title="Clear the limits and go back to the shared view">Reset</button>
                 </span>
+                <label title="Font size of the legend, axis titles and plot title (the title a little larger). Blank = as shared.">Font
+                    <input type="number" class="lim" id="font-size" min="6" max="48" step="1" style="width:56px;"></label>
                 <label title="Logarithmic Y axis. Values of zero or below can't be drawn on it and are left out."><input type="checkbox" id="log-y"> Log Y</label>
             </div>
             <div class="controls" id="controls">
@@ -348,6 +350,7 @@
             }
             document.querySelectorAll('.agg-opt').forEach(el => { el.style.display = kind === 'none' ? 'none' : ''; });
             document.getElementById('err-wrap').style.display = kind === 'mean' ? '' : 'none';
+            PlotScale.applyFontSize(layout, document.getElementById('font-size').value);
             return Plotly.react(gd, data, layout, { responsive: true, displaylogo: false }).then(readView);
         }
 
@@ -358,6 +361,9 @@
         }
 
         document.getElementById('log-y').addEventListener('change', render);
+        // Starts at the size the plot was shared with (blank = Plotly default).
+        document.getElementById('font-size').value = (baseLayout.meta && baseLayout.meta.fontSize) || '';
+        document.getElementById('font-size').addEventListener('change', render);
         document.getElementById('dl-csv').addEventListener('click', () => {
             const name = ({{ shared.title|tojson }} || 'shared_plot').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '');
             PlotCsv.downloadCsv(gd, (name || 'shared_plot') + '.csv');

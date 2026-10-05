@@ -1239,6 +1239,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     </select>
                 </div>
                 <div>
+                    <label class="form-label mb-0 small fw-bold">Font size</label>
+                    <input type="number" class="form-control form-control-sm sp-font-size" min="6" max="48" step="1" placeholder="auto (12)" style="max-width:110px;"
+                        title="Legend, axis titles and plot title together (the title a little larger). Blank = default.">
+                </div>
+                <div>
                     <label class="form-label mb-0 small fw-bold">Auto-zoom percentile</label>
                     <input type="number" class="form-control form-control-sm sp-zoom-pct" value="100" min="1" max="100" step="1" title="Central % of points to keep in view per axis (100 = fit all; lower clips outliers)">
                 </div>
@@ -4781,6 +4786,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         }
                     }
                 };
+                PlotScale.applyFontSize(layout, q('.sp-font-size').value);
                 // Multiple Y boxes at the same X tile side by side instead of overlapping.
                 if (type === 'box') layout.boxmode = 'group';
                 Plotly.newPlot(plotDiv, traces, layout, {
@@ -4831,6 +4837,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             q('.sp-add-filter').addEventListener('click', addFilterRow);
             q('.sp-show-tags').addEventListener('change', plot);
             q('.sp-log-y').addEventListener('change', plot);
+            q('.sp-font-size').addEventListener('change', plot);
             q('.sp-box-points').addEventListener('change', plot);
             q('.sp-err-bars').addEventListener('change', plot);
             q('.sp-agg-line').addEventListener('change', plot);

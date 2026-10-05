@@ -120,6 +120,38 @@
         return tr.error_y;
     }
 
-    window.PlotScale = { f: f, inv: inv, chooseC: chooseC, ticks: ticks, fmt: fmt,
+    // One size for the legend, axis titles and plot title (the title a step
+    // larger). Blank / invalid = Plotly's defaults. Margins grow with the font
+    // so the bottom legend and axis titles don't collide or clip.
+    function applyFontSize(layout, size) {
+        size = Number(size);
+        if (!isFinite(size) || size <= 0) return layout;
+        const k = size / 12;
+        const withFont = (t, sz) => {
+            const o = (t && typeof t === 'object') ? Object.assign({}, t) : { text: t || '' };
+            o.font = Object.assign({}, o.font, { size: sz });
+            return o;
+        };
+        ['xaxis', 'yaxis'].forEach(ax => {
+            if (!layout[ax]) layout[ax] = {};
+            layout[ax] = Object.assign({}, layout[ax], { title: withFont(layout[ax].title, size), automargin: true });
+        });
+        if (layout.title) layout.title = withFont(layout.title, Math.round(size * 1.3));
+        layout.legend = Object.assign({}, layout.legend, { font: Object.assign({}, (layout.legend || {}).font, { size: size }) });
+        if (layout.legend.title) layout.legend.title = withFont(layout.legend.title, size);
+        // Scale from the unscaled margins, recorded the first time, so applying
+        // a size to an already-sized layout (a shared snapshot) doesn't compound.
+        const baseMargin = (layout.meta && layout.meta.baseMargin) || layout.margin;
+        if (baseMargin) {
+            const m = Object.assign({}, baseMargin);
+            if (m.b) m.b = Math.round(m.b * Math.max(1, k));
+            if (m.t) m.t = Math.round(m.t * Math.max(1, k));
+            layout.margin = m;
+        }
+        layout.meta = Object.assign({}, layout.meta, { fontSize: size, baseMargin: baseMargin });
+        return layout;
+    }
+
+    window.PlotScale = { applyFontSize: applyFontSize, f: f, inv: inv, chooseC: chooseC, ticks: ticks, fmt: fmt,
                          applyToTrace: applyToTrace, restoreTrace: restoreTrace, realY: realY, realErr: realErr };
 })();
