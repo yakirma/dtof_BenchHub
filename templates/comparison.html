@@ -1053,6 +1053,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     <input type="number" class="form-control form-control-sm" id="zoom-end" placeholder="End Bin"
                         style="width: 100px;">
                     <button type="button" id="apply-zoom-btn" class="btn btn-success btn-sm ms-2">Apply</button>
+                    <div class="form-check form-switch ms-3 mb-0" title="All histograms of a sample share one Y axis, scaled to the largest of them (here and in the table). Zoom is always shared while this window is open.">
+                        <input class="form-check-input" type="checkbox" id="hist-shared-y" checked>
+                        <label class="form-check-label small" for="hist-shared-y">Same Y scale</label>
+                    </div>
                 </div>
                 <div>
                     <button type="button" id="hist-copy-btn" class="btn btn-outline-secondary"
@@ -1932,24 +1936,72 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         maintainAspectRatio: false
     };
 
+    // ---- One Y scale per sample row ----
+    // Every histogram shown in a sample's row (GT and each submission, every
+    // histogram column) uses the row's largest count as its Y maximum, so bars
+    // can be compared across submissions at a glance. On by default; the
+    // "Same Y scale" switch in the histogram modal turns it off (remembered).
+    const HIST_SHARED_KEY = 'cmpHistSharedY';
+    let histSharedY = true;
+    try { histSharedY = localStorage.getItem(HIST_SHARED_KEY) !== '0'; } catch (e) { }
+    const histCols = selectedComparisonDisplayColumns.filter(c => c.startsWith('histogram_'));
+    function histRowMax(sample) {
+        let m = 0;
+        const take = (counts) => { (counts || []).forEach(v => { if (isFinite(v) && v > m) m = v; }); };
+        if (selectedComparisonDisplayColumns.includes('gt_histogram') && sample.ground_truth) take(sample.ground_truth.counts);
+        (sample.predictions || []).forEach(p => histCols.forEach(c => { if (p[c]) take(p[c].counts); }));
+        return m > 0 ? m : undefined;
+    }
+    // Histograms are drawn on a numeric bin axis ({x: bin, y: count}), not by
+    // bin position, so submissions with different bin ranges or widths line up
+    // by bin value. With the shared scale every chart in the row spans the row's
+    // full bin range (padded half a bin so edge bars aren't cut).
+    function histPoints(bins, counts) {
+        return (bins || []).map((b, i) => ({ x: Number(b), y: counts[i] }));
+    }
+    function histRowXRange(sample) {
+        let lo = Infinity, hi = -Infinity, w = Infinity;
+        const take = (bins) => {
+            const b = (bins || []).map(Number).filter(isFinite);
+            b.forEach(v => { if (v < lo) lo = v; if (v > hi) hi = v; });
+            for (let i = 1; i < b.length; i++) { const d = Math.abs(b[i] - b[i - 1]); if (d > 0 && d < w) w = d; }
+        };
+        if (selectedComparisonDisplayColumns.includes('gt_histogram') && sample.ground_truth) take(sample.ground_truth.bins);
+        (sample.predictions || []).forEach(p => histCols.forEach(c => { if (p[c]) take(p[c].bins); }));
+        if (!isFinite(lo) || !isFinite(hi)) return null;
+        const pad = isFinite(w) ? w / 2 : 0;
+        return { min: lo - pad, max: hi + pad, binWidth: isFinite(w) ? w : 1 };
+    }
+    function inlineHistOptions(sample) {
+        const yMax = histSharedY ? histRowMax(sample) : undefined;
+        const xr = histSharedY ? histRowXRange(sample) : null;
+        return Object.assign({}, inlineBarOptions, {
+            scales: {
+                x: { type: 'linear', display: false, offset: false, min: xr ? xr.min : undefined, max: xr ? xr.max : undefined },
+                y: { display: false, beginAtZero: true, max: yMax }
+            }
+        });
+    }
+    // Inline histogram charts by sample id, so the switch can rescale them.
+    const inlineHistCharts = [];
+
     comparisonData.forEach((sampleData, sampleIndex) => {
         if (selectedComparisonDisplayColumns.includes('gt_histogram')) {
             const gtCanvas = document.getElementById(`gt-chart-${sampleData.sample_id}`);
             if (gtCanvas) {
-                new Chart(gtCanvas.getContext('2d'), {
+                inlineHistCharts.push({ sample: sampleData, chart: new Chart(gtCanvas.getContext('2d'), {
                     type: 'bar',
                     data: {
-                        labels: sampleData.ground_truth.bins.map(String),
                         datasets: [{
-                            data: sampleData.ground_truth.counts,
+                            data: histPoints(sampleData.ground_truth.bins, sampleData.ground_truth.counts),
                             backgroundColor: 'rgba(54, 162, 235, 0.6)',
                             borderWidth: 0,
                             barPercentage: 1.0,
                             categoryPercentage: 1.0
                         }]
                     },
-                    options: inlineBarOptions
-                });
+                    options: inlineHistOptions(sampleData)
+                }) });
             }
         }
 
@@ -1975,20 +2027,19 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
 
                         if (canvas) {
-                            new Chart(canvas.getContext('2d'), {
+                            inlineHistCharts.push({ sample: sampleData, chart: new Chart(canvas.getContext('2d'), {
                                 type: 'bar',
                                 data: {
-                                    labels: histData.bins.map(String),
                                     datasets: [{
-                                        data: histData.counts,
+                                        data: histPoints(histData.bins, histData.counts),
                                         backgroundColor: 'rgba(54, 162, 235, 0.6)',
                                         borderWidth: 0,
                                         barPercentage: 1.0,
                                         categoryPercentage: 1.0
                                     }]
                                 },
-                                options: inlineBarOptions
-                            });
+                                options: inlineHistOptions(sampleData)
+                            }) });
                         }
                     }
                 });
@@ -2172,23 +2223,54 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     const modalChartCanvas = document.getElementById('modal-chart');
     let modalChart = null;
 
-    const createInteractiveChart = (title, labels, data) => {
+    // Zoom shared by every histogram in the modal: a zoom or pan on one is
+    // remembered (as an X range) and applied to whichever histogram is shown
+    // next, in the gallery or via Prev/Next sample. Reset Zoom / closing clears it.
+    let histZoom = null;
+    const rememberHistZoom = ({ chart }) => {
+        const x = chart.scales.x;
+        histZoom = (x && isFinite(x.min) && isFinite(x.max)) ? { min: x.min, max: x.max } : null;
+    };
+    const createInteractiveChart = (title, labels, data, sample) => {
         if (modalChart) modalChart.destroy();
         document.getElementById('chartModalLabel').textContent = title;
+        const yMax = (histSharedY && sample) ? histRowMax(sample) : undefined;
+        const xr = sample ? histRowXRange(sample) : null;
+        const zoomCfg = modalBarOptions.plugins.zoom;
+        const options = Object.assign({}, modalBarOptions, {
+            plugins: Object.assign({}, modalBarOptions.plugins, {
+                zoom: Object.assign({}, zoomCfg, {
+                    // Bin units now (numeric axis): allow zooming to ~5 bins.
+                    limits: { x: { minRange: xr ? xr.binWidth * 5 : 1 } },
+                    pan: Object.assign({}, zoomCfg.pan, { onPanComplete: rememberHistZoom }),
+                    zoom: Object.assign({}, zoomCfg.zoom, { onZoomComplete: rememberHistZoom })
+                })
+            }),
+            scales: Object.assign({}, modalBarOptions.scales, {
+                // The full bin range of the row either way, so a histogram's own
+                // range is still shown in context when the shared Y is off.
+                x: Object.assign({}, modalBarOptions.scales.x, { type: 'linear', offset: false,
+                    min: xr ? xr.min : undefined, max: xr ? xr.max : undefined,
+                    // The half-bin padding would otherwise label the ends -0.1 / 100.07.
+                    ticks: { includeBounds: false } }),
+                y: Object.assign({}, modalBarOptions.scales.y, { max: yMax })
+            })
+        });
         modalChart = new Chart(modalChartCanvas.getContext('2d'), {
             type: 'bar',
             data: {
-                labels: labels,
                 datasets: [{
-                    data: data,
+                    data: histPoints(labels, data),
                     backgroundColor: 'rgba(54, 162, 235, 0.6)',
                     borderWidth: 0,
                     barPercentage: 1.0,
                     categoryPercentage: 1.0
                 }]
             },
-            options: modalBarOptions
+            options: options
         });
+        modalChart.$sample = sample;
+        if (histZoom) modalChart.zoomScale('x', histZoom, 'none');
         // chartModal.show(); // Removed auto-show to support gallery update
     };
 
@@ -2357,7 +2439,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             const fieldLabel = (histField || 'Histogram').replace('histogram_', '').replace(/_/g, ' ').toUpperCase();
             title = `${fieldLabel}: ${sub.name} - Sample: ${sample.sample_name}`;
         }
-        createInteractiveChart(title, labels, counts);
+        createInteractiveChart(title, labels, counts, sample);
     };
 
     document.querySelectorAll('.hist-chart-container').forEach(container => {
@@ -2371,6 +2453,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     });
 
     document.getElementById('reset-zoom-btn').addEventListener('click', () => {
+        histZoom = null;
         if (modalChart) modalChart.resetZoom();
         // Pan slider removed
         // document.getElementById('zoom-pan-slider').value = 0;
@@ -2378,6 +2461,29 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     });
 
     // Slider event listener removed
+
+    document.getElementById('chart-modal').addEventListener('hidden.bs.modal', () => { histZoom = null; });
+    // "Same Y scale" switch: applies to the modal and every inline histogram.
+    const sharedYBox = document.getElementById('hist-shared-y');
+    if (sharedYBox) {
+        sharedYBox.checked = histSharedY;
+        sharedYBox.addEventListener('change', () => {
+            histSharedY = sharedYBox.checked;
+            try { localStorage.setItem(HIST_SHARED_KEY, histSharedY ? '1' : '0'); } catch (e) { }
+            inlineHistCharts.forEach(({ sample, chart }) => {
+                const xr = histSharedY ? histRowXRange(sample) : null;
+                chart.options.scales.y.max = histSharedY ? histRowMax(sample) : undefined;
+                chart.options.scales.x.min = xr ? xr.min : undefined;
+                chart.options.scales.x.max = xr ? xr.max : undefined;
+                chart.update('none');
+            });
+            if (modalChart) {
+                const sample = modalChart.$sample;
+                modalChart.options.scales.y.max = (histSharedY && sample) ? histRowMax(sample) : undefined;
+                modalChart.update('none');
+            }
+        });
+    }
 
     document.getElementById('apply-zoom-btn').addEventListener('click', () => {
         if (modalChart) {
@@ -2387,6 +2493,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             if (!isNaN(start) && !isNaN(end) && start < end) {
                 modalChart.zoomScale('x', { min: start, max: end });
                 modalChart.update();
+                histZoom = { min: start, max: end };
             } else {
                 alert("Please enter a valid start and end range.");
             }
@@ -2859,7 +2966,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     const bins = sample.ground_truth.bins.map(String);
                     const counts = sample.ground_truth.counts;
                     title = `Ground Truth: ${sample.sample_name} `;
-                    if (typeof createInteractiveChart === 'function') createInteractiveChart(title, bins, counts);
+                    if (typeof createInteractiveChart === 'function') createInteractiveChart(title, bins, counts, sample);
                 } else {
                     const pred = sample.predictions.find(p => p.sub_id === subId);
                     const sub = submissions.find(s => s.id === subId);
@@ -2868,7 +2975,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     const bins = pred.bins.map(String);
                     const counts = pred.counts;
                     title = `Prediction: ${sub.name} - Sample: ${sample.sample_name} `;
-                    if (typeof createInteractiveChart === 'function') createInteractiveChart(title, bins, counts);
+                    if (typeof createInteractiveChart === 'function') createInteractiveChart(title, bins, counts, sample);
                 }
             };
         });
