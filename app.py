@@ -4498,6 +4498,37 @@ def update_leaderboard_metrics(project_name, leaderboard_id):
     db.session.commit()
     return redirect(url_for('comparison_view', leaderboard_id=leaderboard_id))
 
+def with_gt_source_submissions(leaderboard, submissions):
+    """
+    Add every submission a metric of this leaderboard uses as its ground truth
+    (LeaderboardMetric.gt_source_submission_id) to a comparison.
+
+    Those metrics are scored against that submission, so a comparison without
+    it can't show what the scores mean. Each GT submission is added once, first,
+    and only if it isn't already being compared (it is added even when archived;
+    the metric still depends on it). Returns (submissions, gt_labels) where
+    gt_labels maps submission id -> "GT for <metric>, <metric>" for display.
+    """
+    roles = {}
+    for lm in leaderboard.leaderboard_metrics:
+        if lm.gt_source_submission_id:
+            name = lm.target_name or (lm.global_metric.name if lm.global_metric else f'metric {lm.id}')
+            roles.setdefault(lm.gt_source_submission_id, [])
+            if name not in roles[lm.gt_source_submission_id]:
+                roles[lm.gt_source_submission_id].append(name)
+    if not roles or not submissions:
+        return submissions, {}
+    have = {s.id for s in submissions}
+    missing = [sid for sid in roles if sid not in have]
+    extra = (Submission.query.filter(Submission.id.in_(missing),
+                                     Submission.leaderboard_id == leaderboard.id)
+             .order_by(Submission.id).all() if missing else [])
+    submissions = extra + list(submissions)
+    present = {s.id for s in submissions}
+    labels = {sid: 'GT for ' + ', '.join(names) for sid, names in roles.items() if sid in present}
+    return submissions, labels
+
+
 @app.route('/<project_name>/comparison/<int:leaderboard_id>/scalar_data')
 def comparison_scalar_data(project_name, leaderboard_id):
     """
@@ -4526,6 +4557,8 @@ def comparison_scalar_data(project_name, leaderboard_id):
                        if str(s.id) in compare_ids and not s.is_archived]
     else:
         submissions = [s for s in leaderboard.submissions if not s.is_archived]
+    # Same set as the comparison page, GT-source submissions included.
+    submissions, gt_labels = with_gt_source_submissions(leaderboard, submissions)
 
     dataset_ids = [d.id for d in leaderboard.datasets] if leaderboard.datasets \
         else ([leaderboard.dataset_id] if leaderboard.dataset_id else [])
@@ -4595,7 +4628,8 @@ def comparison_scalar_data(project_name, leaderboard_id):
     for sub in submissions:
         sub_name_counts[sub.name] = sub_name_counts.get(sub.name, 0) + 1
     for sub in submissions:
-        sub_label = sub.name if sub_name_counts[sub.name] == 1 else f"{sub.name} (#{sub.id})"
+        sub_label = (sub.name if sub_name_counts[sub.name] == 1 else f"{sub.name} (#{sub.id})") \
+            + (f" ({gt_labels[sub.id]})" if sub.id in gt_labels else '')
         rows = db.session.query(
             CustomField.name, CustomField.sample_name, CustomField.value_float
         ).filter(
@@ -4639,7 +4673,9 @@ def comparison_scalar_data(project_name, leaderboard_id):
                 if k:
                     pairs[k] = v
         submission_meta[str(sub.id)] = {
-            'label': sub.name if sub_name_counts[sub.name] == 1 else f"{sub.name} (#{sub.id})",
+            'label': (sub.name if sub_name_counts[sub.name] == 1 else f"{sub.name} (#{sub.id})")
+                     + (f" ({gt_labels[sub.id]})" if sub.id in gt_labels else ''),
+            'gt_for': gt_labels.get(sub.id, ''),
             'tags': names,
             'tag_pairs': pairs,
         }
@@ -4665,6 +4701,10 @@ def comparison_view(project_name, leaderboard_id):
         submissions = [s for s in leaderboard.submissions if str(s.id) in compare_ids and not s.is_archived]
     else:
         submissions = [s for s in leaderboard.submissions if not s.is_archived]
+    # A metric scored against another submission's output brings that
+    # submission into every comparison (once), labelled "GT for <metric>". This
+    # also covers the plot's point click, which opens one submission.
+    submissions, gt_source_labels = with_gt_source_submissions(leaderboard, submissions)
     
     if not submissions:
         return render_template('comparison.html', 
@@ -4697,7 +4737,8 @@ def comparison_view(project_name, leaderboard_id):
                                sample_metric_options=SAMPLE_METRIC_OPTIONS, 
                                active_metrics=[],
                                project_name=project_name,
-                               current_compare_ids=compare_ids_arg)
+                               current_compare_ids=compare_ids_arg,
+                           gt_source_labels=gt_source_labels)
 
     # Pagination params
     page = request.args.get('page', 1, type=int)
@@ -5433,7 +5474,8 @@ def comparison_view(project_name, leaderboard_id):
                            metric_labels=metric_labels,
                            active_metrics=active_metrics,
                            project_name=project_name,
-                           current_compare_ids=compare_ids_arg)
+                           current_compare_ids=compare_ids_arg,
+                           gt_source_labels=gt_source_labels)
 
 
 

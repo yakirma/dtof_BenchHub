@@ -366,7 +366,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         </optgroup>
                         <option value="" {% if not sort_by %}selected{% endif %}>Default (No Sort)</option>
                         {% for sub in submissions %}
-                        <optgroup label="{{ sub.name }}">
+                        <optgroup label="{{ sub.name }}{% if gt_source_labels and sub.id in gt_source_labels %} ({{ gt_source_labels[sub.id] }}){% endif %}">
                             <option value="peak:{{ sub.id }}" {% if sort_by=='peak:' ~ sub.id %}selected{% endif %}>Peak
                             </option>
                             {% for m in selected_metrics %}
@@ -471,7 +471,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 id="status-{{ sub.id }}">
                 Sub{{ loop.index }}: {{ sub.processing_status }}
             </span>
-            <span class="me-2">{{ sub.name }}</span>{% if not loop.last %}, {% endif %}
+            <span class="me-2">{{ sub.name }}{% if gt_source_labels and sub.id in gt_source_labels %}<span class="badge text-bg-info ms-1" title="This submission is the ground truth of these metrics; it is added to every comparison">{{ gt_source_labels[sub.id] }}</span>{% endif %}</span>{% if not loop.last %}, {% endif %}
             {% endfor %}
         </div>
 
@@ -502,7 +502,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             <div class="text-center">
                                 <div class="card shadow-sm h-100">
                                     <div class="card-header py-1 small bg-body-secondary">
-                                        <strong>Sub{{ loop.index }}:</strong> {{ sub.name }}
+                                        <strong>Sub{{ loop.index }}:</strong> {{ sub.name }}{% if gt_source_labels and sub.id in gt_source_labels %}<span class="badge text-bg-info ms-1" title="This submission is the ground truth of these metrics; it is added to every comparison">{{ gt_source_labels[sub.id] }}</span>{% endif %}
                                     </div>
                                     <div class="card-body p-1 viz-frame"
                                         style="height: 200px; position: relative;">
@@ -563,7 +563,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         {% if col_key in submission_has_histogram.get(sub.id, []) %}
                         <th draggable="true" {% set col_width=global_settings.histogram_width %}
                             style="width: {{ col_width }}; min-width: {{ col_width }}; overflow: hidden; text-overflow: ellipsis;">
-                            Sub{{ loop.index }} ({{ comparison_display_options[col_key].label }})
+                            Sub{{ loop.index }}{% if gt_source_labels and sub.id in gt_source_labels %} <span class="badge text-bg-info" title="{{ gt_source_labels[sub.id] }}">GT</span>{% endif %} ({{ comparison_display_options[col_key].label }})
                             <div class="resizer"></div>
                         </th>
                         {% endif %}
@@ -583,7 +583,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         {% if col_key in submission_custom_fields.get(sub.id, []) %}
                         <th draggable="true"
                             style="width: {{ comparison_display_options[col_key].default_width or '300px' }}; min-width: {{ comparison_display_options[col_key].default_width or '300px' }}; overflow: hidden; text-overflow: ellipsis;">
-                            Sub{{ loop.index }} ({{ label }})
+                            Sub{{ loop.index }}{% if gt_source_labels and sub.id in gt_source_labels %} <span class="badge text-bg-info" title="{{ gt_source_labels[sub.id] }}">GT</span>{% endif %} ({{ label }})
                             <div class="resizer"></div>
                         </th>
                         {% endif %}
@@ -595,7 +595,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         {% for sub in submissions %}
                         <th draggable="true"
                             style="width: {{ comparison_display_options[col_key].default_width }}; min-width: {{ comparison_display_options[col_key].default_width }}; overflow: hidden; text-overflow: ellipsis;">
-                            Sub{{ loop.index }} ({{ comparison_display_options[col_key].label|replace('📊 ', '') }})
+                            Sub{{ loop.index }}{% if gt_source_labels and sub.id in gt_source_labels %} <span class="badge text-bg-info" title="{{ gt_source_labels[sub.id] }}">GT</span>{% endif %} ({{ comparison_display_options[col_key].label|replace('📊 ', '') }})
                             <div class="resizer"></div>
                         </th>
                         {% endfor %}
@@ -772,7 +772,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                         <tr>
                                             <th></th>
                                             {% for sub in submissions %}
-                                            <th>Sub{{ loop.index }}</th>
+                                            <th>Sub{{ loop.index }}{% if gt_source_labels and sub.id in gt_source_labels %} <span class="badge text-bg-info" title="{{ gt_source_labels[sub.id] }}">GT</span>{% endif %}</th>
                                             {% endfor %}
                                         </tr>
                                     </thead>
