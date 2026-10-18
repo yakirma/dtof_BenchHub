@@ -1236,7 +1236,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         <option value="box">Box (group by X value)</option>
                         <option value="mean">Mean (group by X value)</option>
                         <option value="std">Std (group by X value)</option>
+                        <option value="median">Median (group by X value)</option>
+                        <option value="percentile">Percentile (group by X value)</option>
                     </select>
+                </div>
+                <div class="sp-agg-pct-wrap" style="display:none;">
+                    <label class="form-label mb-0 small fw-bold">Percentile</label>
+                    <input type="number" class="form-control form-control-sm sp-agg-pct" value="90" min="0" max="100" step="any" style="max-width:90px;"
+                        title="0-100. Linear interpolation between ranks (numpy's default): 50 = median, 0 = min, 100 = max.">
                 </div>
                 <div>
                     <label class="form-label mb-0 small fw-bold">Font size <span class="fw-normal text-muted sp-font-size-val">auto</span></label>
@@ -1261,11 +1268,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             </div>
             <div class="form-check">
                 <input class="form-check-input sp-agg-line" type="checkbox" checked>
-                <label class="form-check-label small">Connect aggregated points with a line (Mean/Std)</label>
+                <label class="form-check-label small">Connect aggregated points with a line (Mean/Std/Median/Percentile)</label>
             </div>
             <div class="form-check">
                 <input class="form-check-input sp-agg-dodge" type="checkbox" checked>
-                <label class="form-check-label small">Offset each series side by side at each X (Mean/Std)</label>
+                <label class="form-check-label small">Offset each series side by side at each X (aggregated plots)</label>
             </div>
         </div>
 
@@ -3482,27 +3489,13 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             return [lo - margin, hi + margin];
         }
         // Collapse every point sharing an X value into one aggregate, for the
-        // "Mean"/"Std" chart types. Population std (÷n), matching numpy's default
-        // so the figure agrees with the aggregates computed server-side.
-        function aggregateByX(pts, kind) {
-            const byX = new Map();
-            pts.forEach(p => {
-                let bucket = byX.get(p.x);
-                if (!bucket) { bucket = []; byX.set(p.x, bucket); }
-                bucket.push(p.y);
-            });
-            const xs = Array.from(byX.keys()).sort((a, b) => a - b);
-            const ys = [], sds = [], ns = [];
-            xs.forEach(x => {
-                const v = byX.get(x);
-                const n = v.length;
-                const mean = v.reduce((s, y) => s + y, 0) / n;
-                const sd = Math.sqrt(v.reduce((s, y) => s + (y - mean) * (y - mean), 0) / n);
-                ys.push(kind === 'std' ? sd : mean);
-                sds.push(sd);
-                ns.push(n);
-            });
-            return { xs: xs, ys: ys, sds: sds, ns: ns };
+        // "Mean"/"Std"/"Median"/"Percentile" chart types. Population std (÷n) and
+        // linearly interpolated percentiles, matching numpy's defaults so the
+        // figure agrees with the aggregates computed server-side.
+        function aggregateByX(pts, kind, pct) {
+            // Shared with the shared-plot page (static/js/plot_scale.js) so both
+            // compute identical aggregates.
+            return PlotScale.aggregateByX(pts.map(p => p.x), pts.map(p => p.y), kind, pct);
         }
         // Median gap between consecutive X values, used to size the band that the
         // individual points are spread across so they stay inside "their" column.
@@ -4485,7 +4478,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 const showErrBars = q('.sp-err-bars') && q('.sp-err-bars').checked;
                 const showAggLine = !q('.sp-agg-line') || q('.sp-agg-line').checked;
                 const dodgeSeries = !q('.sp-agg-dodge') || q('.sp-agg-dodge').checked;
-                const isAgg = (type === 'mean' || type === 'std');
+                const isAgg = PlotScale.isAggKind(type);
+                const aggPctRaw = parseFloat(q('.sp-agg-pct').value);
+                const aggPct = isFinite(aggPctRaw) ? Math.min(100, Math.max(0, aggPctRaw)) : 90;
+                // Name shown in titles and hover: mean, std, median, p90.
+                const aggName = PlotScale.aggLabel(type, aggPct);
                 const sampleTags = SP.sample_tags || {};
 
                 const seriesMap = new Map();
@@ -4533,7 +4530,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 const yLblBase = Array.from(new Set((shownSpecs.length ? shownSpecs : specs)
                     .map(sp => yAxisPartOf(sp.yKey)))).join(', ');
                 const yLblAuto = (yFnText && yFnText.trim() && yFnText.trim() !== 'x') ? (yFnText.trim() + '  [' + yLblBase + ']') : yLblBase;
-                const yLblAgg = isAgg ? (type + '(' + yLblAuto + ')') : yLblAuto;
+                const yLblAgg = isAgg ? (aggName + '(' + yLblAuto + ')') : yLblAuto;
                 const yLbl = axisLabel.y.trim() ? axisLabel.y.trim() : yLblAgg;
 
                 // Mean/Std: nudge each SERIES sideways at every X so submissions sit
@@ -4641,7 +4638,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             // every Y sharing it. No `text` is set, so the
                             // click-to-open-sample handler correctly ignores these
                             // points — they represent a bucket, not one sample.
-                            const agg = aggregateByX(pts, type);
+                            const agg = aggregateByX(pts, type, aggPct);
                             const dodge = dodgeFor(yIdx + ' ' + g);
                             const aggTrace = {
                                 type: 'scatter',
@@ -4653,14 +4650,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 // Carries the TRUE x alongside n, so the offset applied
                                 // for readability never shows up in the tooltip.
                                 customdata: agg.xs.map((xv, i) => [agg.ns[i], xv]),
-                                hovertemplate: xLbl + ': %{customdata[1]}<br>' + type + '(' + yLabel + '): %{y}'
+                                hovertemplate: xLbl + ': %{customdata[1]}<br>' + aggName + '(' + yLabel + '): %{y}'
                                     + '<br>n: %{customdata[0]}<extra>' + name + '</extra>',
                                 marker: { symbol: MARKERS[markerIdx % MARKERS.length], color: color, size: 9, line: { width: 0.5, color: '#333' } },
                                 line: { color: color },
                                 // The underlying samples ride along (Plotly ignores `meta`
                                 // for drawing) so a shared snapshot of this plot can
                                 // switch back to raw points or re-aggregate.
-                                meta: { aggKind: type, raw: { x: pts.map(p => p.x), y: pts.map(p => p.y), text: pts.map(p => p.t), sub: pts.map(p => p.s) } }
+                                meta: { aggKind: type, aggPct: aggPct, raw: { x: pts.map(p => p.x), y: pts.map(p => p.y), text: pts.map(p => p.t), sub: pts.map(p => p.s) } }
                             };
                             if (type === 'mean' && showErrBars) {
                                 aggTrace.error_y = {
@@ -4843,6 +4840,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             q('.sp-add-filter').addEventListener('click', addFilterRow);
             q('.sp-show-tags').addEventListener('change', plot);
             q('.sp-log-y').addEventListener('change', plot);
+            // The percentile box only applies to the Percentile chart type.
+            const syncAggPct = () => { q('.sp-agg-pct-wrap').style.display = selType.value === 'percentile' ? '' : 'none'; };
+            selType.addEventListener('change', syncAggPct);
+            syncAggPct();
+            q('.sp-agg-pct').addEventListener('change', () => { if (selType.value === 'percentile') plot(); });
             q('.sp-font-size').addEventListener('input', () => {
                 const el = q('.sp-font-size');
                 el.dataset.set = '1';

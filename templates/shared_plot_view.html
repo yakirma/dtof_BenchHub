@@ -60,8 +60,12 @@
                         <option value="none">None (all points)</option>
                         <option value="mean">Mean (group by X value)</option>
                         <option value="std">Std (group by X value)</option>
+                        <option value="median">Median (group by X value)</option>
+                        <option value="percentile">Percentile (group by X value)</option>
                     </select>
                 </label>
+                <label id="pct-wrap" style="display:none;" title="0-100. Linear interpolation between ranks (numpy's default): 50 = median.">Percentile
+                    <input type="number" id="agg-pct" value="90" min="0" max="100" step="any" style="width:64px;"></label>
                 <label class="agg-opt"><input type="checkbox" id="agg-line" checked> Line</label>
                 <label class="agg-opt" id="err-wrap"><input type="checkbox" id="err-bars" checked> ±1 std error bars</label>
                 <label class="agg-opt"><input type="checkbox" id="agg-dodge" checked> Offset series</label>
@@ -109,6 +113,9 @@
             return { tr: tr, raw: raw, rawMode: rawMode, snapKind: (tr.meta && tr.meta.aggKind) || 'none' };
         });
         const snapshotKind = (baseTraces.find(b => b.snapKind !== 'none') || { snapKind: 'none' }).snapKind;
+        // A plot shared as a percentile starts the box at that percentile.
+        const snapshotPct = ((baseTraces.find(b => b.tr.meta && b.tr.meta.aggPct != null) || {}).tr || { meta: {} }).meta.aggPct;
+        if (snapshotPct != null) document.getElementById('agg-pct').value = snapshotPct;
         // Starts as shared: on if the plot was shared with a log Y axis.
         const snapMeta = baseLayout.meta || {};
         const snapshotScale = snapMeta.yScale || ((baseLayout.yaxis && baseLayout.yaxis.type === 'log') ? 'log' : 'linear');
@@ -176,17 +183,12 @@
 
         // Same maths as the comparison view: population std, buckets by exact X.
         function aggregateByX(xs, ys, kind) {
-            const byX = new Map();
-            xs.forEach((x, i) => { if (!byX.has(x)) byX.set(x, []); byX.get(x).push(ys[i]); });
-            const ux = Array.from(byX.keys()).sort((a, b) => a - b);
-            const out = { xs: ux, ys: [], sds: [], ns: [] };
-            ux.forEach(x => {
-                const v = byX.get(x), n = v.length;
-                const mean = v.reduce((s, y) => s + y, 0) / n;
-                const sd = Math.sqrt(v.reduce((s, y) => s + (y - mean) * (y - mean), 0) / n);
-                out.ys.push(kind === 'std' ? sd : mean); out.sds.push(sd); out.ns.push(n);
-            });
-            return out;
+            // Same maths as the plot panel (static/js/plot_scale.js).
+            return PlotScale.aggregateByX(xs, ys, kind, aggPctValue());
+        }
+        function aggPctValue() {
+            const v = parseFloat(document.getElementById('agg-pct').value);
+            return isFinite(v) ? Math.min(100, Math.max(0, v)) : 90;
         }
         // Spread series sharing an X value across a small band so their markers
         // and error bars don't sit on top of each other (as in the app).
@@ -219,7 +221,8 @@
             const t = clone(b.tr);
             delete t.error_y; delete t.customdata;
             t.meta = Object.assign({}, t.meta);
-            if (kind === 'none') delete t.meta.aggKind; else t.meta.aggKind = kind;
+            if (kind === 'none') { delete t.meta.aggKind; delete t.meta.aggPct; }
+            else { t.meta.aggKind = kind; if (kind === 'percentile') t.meta.aggPct = aggPctValue(); else delete t.meta.aggPct; }
             if (kind === 'none') {
                 t.x = b.raw.x; t.y = b.raw.y; t.text = b.raw.text;
                 if (b.raw.sub) t.meta = Object.assign({}, t.meta, { pointSubs: b.raw.sub });
@@ -241,7 +244,7 @@
             delete t.text;   // a bucket, not a sample: not clickable
             t.customdata = agg.xs.map((xv, k) => [agg.ns[k], xv]);
             t.mode = document.getElementById('agg-line').checked ? 'lines+markers' : 'markers';
-            t.hovertemplate = xLbl + ': %{customdata[1]}<br>' + kind + '(' + yLbl + '): %{y}'
+            t.hovertemplate = xLbl + ': %{customdata[1]}<br>' + PlotScale.aggLabel(kind, aggPctValue()) + '(' + yLbl + '): %{y}'
                 + '<br>n: %{customdata[0]}<extra>' + (t.name || '') + '</extra>';
             if (kind === 'mean' && document.getElementById('err-bars').checked) {
                 const color = (t.marker && t.marker.color) || undefined;
@@ -299,7 +302,8 @@
             // axis, transformed values for symlog), so it is only reused when the
             // scale, and for symlog its threshold, match too.
             const sameScale = yScale === snapshotScale && (yScale !== 'symlog' || symC === snapshotC);
-            if (kind !== snapshotKind || !sameScale || snapshotVisible.some((v, i) => v !== shownNow(i))) {
+            const samePct = kind !== 'percentile' || aggPctValue() === snapshotPct;
+            if (kind !== snapshotKind || !samePct || !sameScale || snapshotVisible.some((v, i) => v !== shownNow(i))) {
                 ['xaxis', 'yaxis'].forEach(ax => {
                     if (layout[ax]) { delete layout[ax].range; layout[ax].autorange = true; }
                 });
@@ -345,20 +349,21 @@
                 if (names.length) {
                     let text = names.join(', ');
                     if (yMeta.fn) text = yMeta.fn + '  [' + text + ']';
-                    if (kind === 'mean' || kind === 'std') text = kind + '(' + text + ')';
+                    if (PlotScale.isAggKind(kind)) text = PlotScale.aggLabel(kind, aggPctValue()) + '(' + text + ')';
                     const t = layout.yaxis.title;
                     layout.yaxis.title = Object.assign({}, (t && typeof t === 'object') ? t : {}, { text: text });
                 }
             }
             document.querySelectorAll('.agg-opt').forEach(el => { el.style.display = kind === 'none' ? 'none' : ''; });
             document.getElementById('err-wrap').style.display = kind === 'mean' ? '' : 'none';
+            document.getElementById('pct-wrap').style.display = kind === 'percentile' ? '' : 'none';
             if (fontTouched) PlotScale.applyFontSize(layout, document.getElementById('font-size').value);
             return Plotly.react(gd, data, layout, { responsive: true, displaylogo: false }).then(readView);
         }
 
         if (canAggregate) {
             document.getElementById('controls').style.display = 'flex';
-            ['agg', 'agg-line', 'err-bars', 'agg-dodge'].forEach(id =>
+            ['agg', 'agg-line', 'err-bars', 'agg-dodge', 'agg-pct'].forEach(id =>
                 document.getElementById(id).addEventListener('change', render));
         }
 

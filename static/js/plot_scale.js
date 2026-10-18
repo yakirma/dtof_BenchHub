@@ -156,6 +156,46 @@
         return layout;
     }
 
-    window.PlotScale = { applyFontSize: applyFontSize, f: f, inv: inv, chooseC: chooseC, ticks: ticks, fmt: fmt,
+    // Collapse every point sharing an X value into one aggregate. Shared by the
+    // plot panel and the shared page so both compute identical values.
+    //   kind: 'mean' | 'std' (population) | 'median' | 'percentile'
+    //   pct:  0..100 for 'percentile' (linear interpolation between ranks, like
+    //         numpy's default)
+    // Returns xs (sorted), ys (the aggregate), sds (population std, for error
+    // bars) and ns (bucket sizes).
+    function percentileOf(sorted, pct) {
+        if (!sorted.length) return NaN;
+        const r = Math.min(100, Math.max(0, pct)) / 100 * (sorted.length - 1);
+        const lo = Math.floor(r), hi = Math.ceil(r);
+        return sorted[lo] + (sorted[hi] - sorted[lo]) * (r - lo);
+    }
+    function aggregateByX(xs, ys, kind, pct) {
+        const byX = new Map();
+        xs.forEach((x, i) => { if (!byX.has(x)) byX.set(x, []); byX.get(x).push(ys[i]); });
+        const ux = Array.from(byX.keys()).sort((a, b) => a - b);
+        const out = { xs: ux, ys: [], sds: [], ns: [] };
+        ux.forEach(x => {
+            const v = byX.get(x), n = v.length;
+            const mean = v.reduce((s, y) => s + y, 0) / n;
+            const sd = Math.sqrt(v.reduce((s, y) => s + (y - mean) * (y - mean), 0) / n);
+            let val = mean;
+            if (kind === 'std') val = sd;
+            else if (kind === 'median' || kind === 'percentile') {
+                const sorted = v.slice().sort((a, b) => a - b);
+                val = percentileOf(sorted, kind === 'median' ? 50 : pct);
+            }
+            out.ys.push(val); out.sds.push(sd); out.ns.push(n);
+        });
+        return out;
+    }
+    // Short name used in axis titles, hover and CSV headers: mean, std, median, p90.
+    function aggLabel(kind, pct) {
+        if (kind === 'percentile') return 'p' + (+(+pct).toFixed(3));
+        return kind;
+    }
+    const AGG_KINDS = ['mean', 'std', 'median', 'percentile'];
+    function isAggKind(k) { return AGG_KINDS.indexOf(k) >= 0; }
+
+    window.PlotScale = { applyFontSize: applyFontSize, aggregateByX: aggregateByX, aggLabel: aggLabel, isAggKind: isAggKind, f: f, inv: inv, chooseC: chooseC, ticks: ticks, fmt: fmt,
                          applyToTrace: applyToTrace, restoreTrace: restoreTrace, realY: realY, realErr: realErr };
 })();

@@ -8,7 +8,7 @@
  * - Sample-level traces (scatter, line, box) give one row per point:
  *     series, field, submission, sample, <x title>, <y title or "y">
  * - Mean/Std traces give one row per X value:
- *     series, field, <x title>, mean|std, n[, std]
+ *     series, field, <x title>, mean|std|median|p<N>, n[, std]
  *   using the TRUE X (the side-by-side offset is display-only) and the bucket
  *   size the tooltip shows.
  *
@@ -48,7 +48,10 @@
         const aggTraces = shown.filter(aggKindOf);
 
         if (aggTraces.length) {
-            const kind = aggKindOf(aggTraces[0]);
+            const kind0 = aggKindOf(aggTraces[0]);
+            const pct = aggTraces[0].meta && aggTraces[0].meta.aggPct;
+            // Column header names the statistic: mean, std, median, p90.
+            const kind = (kind0 === 'percentile' && pct != null) ? 'p' + (+(+pct).toFixed(3)) : kind0;
             const withStd = aggTraces.some(tr => { const e = realErr(tr); return e && Array.isArray(e.array); });
             const rows = [['series', 'field', xHead, kind, 'n'].concat(withStd ? ['std'] : [])];
             aggTraces.forEach(tr => {
