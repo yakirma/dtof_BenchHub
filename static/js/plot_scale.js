@@ -129,6 +129,18 @@
         }
     }
 
+    // "Negative half" off on a symlog axis: keep zero (a true log axis can't show
+    // it) but hide negative values, by blanking their drawn Y. Must run after
+    // applyToTrace (which keeps the real values in meta.symlog). Returns how
+    // many points were hidden.
+    function hideNegatives(tr) {
+        const real = realY(tr);
+        if (!Array.isArray(real) || !Array.isArray(tr.y)) return 0;
+        let n = 0;
+        tr.y = tr.y.map((v, i) => { if (real[i] < 0) { n++; return null; } return v; });
+        return n;
+    }
+
     // A trace as it was before applyToTrace (no-op if it was never transformed).
     function restoreTrace(tr) {
         const s = tr.meta && tr.meta.symlog;
@@ -224,6 +236,12 @@
     const AGG_KINDS = ['mean', 'std', 'median', 'percentile'];
     function isAggKind(k) { return AGG_KINDS.indexOf(k) >= 0; }
 
-    window.PlotScale = { logTicks: logTicks, DASHED_GRID: DASHED_GRID, applyFontSize: applyFontSize, aggregateByX: aggregateByX, aggLabel: aggLabel, isAggKind: isAggKind, f: f, inv: inv, chooseC: chooseC, ticks: ticks, fmt: fmt,
+    // Drop the negative ticks (symlog cut at zero).
+    function nonNegativeTicks(t) {
+        const keep = t.tickvals.map((v, i) => v >= -1e-12 ? i : -1).filter(i => i >= 0);
+        return { tickvals: keep.map(i => t.tickvals[i]), ticktext: keep.map(i => t.ticktext[i]) };
+    }
+
+    window.PlotScale = { nonNegativeTicks: nonNegativeTicks, hideNegatives: hideNegatives, logTicks: logTicks, DASHED_GRID: DASHED_GRID, applyFontSize: applyFontSize, aggregateByX: aggregateByX, aggLabel: aggLabel, isAggKind: isAggKind, f: f, inv: inv, chooseC: chooseC, ticks: ticks, fmt: fmt,
                          applyToTrace: applyToTrace, restoreTrace: restoreTrace, realY: realY, realErr: realErr };
 })();

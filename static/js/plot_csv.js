@@ -56,6 +56,7 @@
             const rows = [['series', 'field', xHead, kind, 'n'].concat(withStd ? ['std'] : [])];
             aggTraces.forEach(tr => {
                 (realY(tr) || []).forEach((yv, i) => {
+                    if (Array.isArray(tr.y) && tr.y[i] === null) return;
                     const cd = Array.isArray(tr.customdata) ? tr.customdata[i] : null;
                     const n = Array.isArray(cd) ? cd[0] : '';
                     const trueX = Array.isArray(cd) ? cd[1] : (tr.x || [])[i];
@@ -72,6 +73,8 @@
         shown.forEach(tr => {
             const subs = tr.meta && tr.meta.pointSubs;
             (tr.x || []).forEach((xv, i) => {
+                // A blanked point (e.g. a negative value hidden on a log axis) isn't drawn.
+                if (Array.isArray(tr.y) && tr.y[i] === null) return;
                 const sid = subs ? subs[i] : null;
                 rows.push([
                     tr.name || '', fieldOf(tr),

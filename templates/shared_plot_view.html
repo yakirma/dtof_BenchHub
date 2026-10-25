@@ -53,7 +53,7 @@
                     <span id="font-size-val" style="min-width:40px;">auto</span>
                     <button type="button" id="font-size-reset" title="Back to the size it was shared with">↺</button></label>
                 <label title="Logarithmic Y axis, labelled at every decade (0.1, 1, 10, ...) with a dashed line at each."><input type="checkbox" id="log-y"> Log Y</label>
-                <label id="log-neg-wrap" style="display:none;" title="Show zero and negative values on a symmetric log axis. Off: a true log axis over the positive values only."><input type="checkbox" id="log-neg" checked> Negative half</label>
+                <label id="log-neg-wrap" style="display:none;" title="Show negative values on a symmetric log axis. Off: the axis starts at 0, so zero is still shown but negative values are hidden."><input type="checkbox" id="log-neg" checked> Negative half</label>
             </div>
             <div class="controls" id="controls">
                 <label>Aggregation
@@ -296,15 +296,20 @@
                 .filter(v => isFinite(v));
             const showNeg = document.getElementById('log-neg').checked;
             document.getElementById('log-neg-wrap').style.display = logY ? '' : 'none';
-            const yScale = !logY ? 'linear' : (showNeg && shownY.some(v => v <= 0) ? 'symlog' : 'log');
+            // Same rule as the app: any value <= 0 needs symlog; "Negative half"
+            // off cuts it at zero (zero shown, negatives hidden).
+            const yScale = !logY ? 'linear' : (shownY.some(v => v <= 0) ? 'symlog' : 'log');
+            const cutAtZero = yScale === 'symlog' && !showNeg;
             const symC = yScale === 'symlog' ? PlotScale.chooseC(shownY) : null;
             if (symC) data.forEach(t => PlotScale.applyToTrace(t, symC));
+            if (cutAtZero) data.forEach(t => PlotScale.hideNegatives(t));
             layout.yaxis = Object.assign({}, layout.yaxis, { type: yScale === 'log' ? 'log' : 'linear', zeroline: yScale === 'symlog' });
             ['tickmode', 'tickvals', 'ticktext', 'showgrid', 'gridcolor', 'griddash', 'gridwidth'].forEach(k => { delete layout.yaxis[k]; });
             // The shared range is in the shared axis's units (log10 for a log
             // axis, transformed values for symlog), so it is only reused when the
             // scale, and for symlog its threshold, match too.
-            const sameScale = yScale === snapshotScale && (yScale !== 'symlog' || symC === snapshotC);
+            const snapshotCut = snapshotScale === 'symlog' && snapMeta.showNeg === false;
+            const sameScale = yScale === snapshotScale && (yScale !== 'symlog' || (symC === snapshotC && cutAtZero === snapshotCut));
             const samePct = kind !== 'percentile' || aggPctValue() === snapshotPct;
             if (kind !== snapshotKind || !samePct || !sameScale || snapshotVisible.some((v, i) => v !== shownNow(i))) {
                 ['xaxis', 'yaxis'].forEach(ax => {
@@ -335,10 +340,16 @@
                     const dn = t.error_y && t.error_y.arrayminus ? t.error_y.arrayminus[i] || 0 : 0;
                     lo = Math.min(lo, v - dn); hi = Math.max(hi, v + up);
                 }));
+                if (cutAtZero && (!layout.yaxis.range || layout.yaxis.autorange)) {
+                    // Cut at zero: start just below 0 so zero points sit on the axis.
+                    layout.yaxis.range = [-0.02 * (hi || 1), hi + 0.05 * (hi || 1)];
+                    layout.yaxis.autorange = false;
+                }
                 const r = (layout.yaxis.range && !layout.yaxis.autorange) ? layout.yaxis.range : [lo - 0.1, hi + 0.1];
                 // Every decade labelled, dashed line at each; ticks reach a few
                 // decades past the view for zooming out.
-                Object.assign(layout.yaxis, { tickmode: 'array' }, PlotScale.DASHED_GRID, PlotScale.ticks(r[0], r[1], symC, 3));
+                const tk = PlotScale.ticks(r[0], r[1], symC, 3);
+                Object.assign(layout.yaxis, { tickmode: 'array' }, PlotScale.DASHED_GRID, cutAtZero ? PlotScale.nonNegativeTicks(tk) : tk);
             } else if (yScale === 'log') {
                 const pos = shownY.filter(v => v > 0);
                 const r = (layout.yaxis.range && !layout.yaxis.autorange) ? layout.yaxis.range

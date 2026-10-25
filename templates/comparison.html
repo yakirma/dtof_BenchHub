@@ -1316,7 +1316,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     <label class="form-check-label small">Log Y</label>
                 </div>
                 <div class="form-check form-check-inline me-0 text-nowrap sp-log-neg-wrap" style="display:none;"
-                    title="Show zero and negative values on a symmetric log axis (linear near zero, log in both directions). Off: a true log axis over the positive values only.">
+                    title="Show negative values on a symmetric log axis (linear near zero, log in both directions). Off: the axis starts at 0, so zero is still shown but negative values are hidden.">
                     <input class="form-check-input sp-log-neg" type="checkbox" checked>
                     <label class="form-check-label small">Negative half</label>
                 </div>
@@ -4831,18 +4831,29 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 // placeholders stay in data units; toPlot/fromPlot convert to what
                 // Plotly's axis uses (log10 units, or symlog-transformed values).
                 const logY = !!(q('.sp-log-y') && q('.sp-log-y').checked);
-                // "Negative half" off: a true log axis even when some values are
-                // <= 0 (Plotly leaves those out; the note counts them).
+                // Any value <= 0 needs symlog (a true log axis can show neither zero
+                // nor negatives). "Negative half" off keeps symlog but cuts it at
+                // zero: zero stays visible, negative values are hidden (counted
+                // in the note), and the axis starts at 0.
                 const showNeg = !q('.sp-log-neg') || q('.sp-log-neg').checked;
                 if (q('.sp-log-neg-wrap')) q('.sp-log-neg-wrap').style.display = logY ? '' : 'none';
-                const yScale = !logY ? 'linear' : (showNeg && allY.some(v => v <= 0) ? 'symlog' : 'log');
+                const yScale = !logY ? 'linear' : (allY.some(v => v <= 0) ? 'symlog' : 'log');
+                const cutAtZero = yScale === 'symlog' && !showNeg;
+                const scaleY = cutAtZero ? allY.filter(v => v >= 0) : allY;
+                // Same threshold whichever way the toggle is set, so turning the
+                // negative half off only cuts the axis at zero.
                 const symC = yScale === 'symlog' ? PlotScale.chooseC(allY) : null;
                 if (symC) traces.forEach(t => PlotScale.applyToTrace(t, symC));
+                const isShownTrace = t => t.visible !== 'legendonly' && t.visible !== false;
+                let hiddenNeg = 0;
+                if (cutAtZero) traces.forEach(t => { const n = PlotScale.hideNegatives(t); if (isShownTrace(t)) hiddenNeg += n; });
                 const toPlot = yScale === 'log' ? Math.log10 : yScale === 'symlog' ? (v => PlotScale.f(v, symC)) : (v => v);
                 const fromPlot = yScale === 'log' ? (v => Math.pow(10, v)) : yScale === 'symlog' ? (v => PlotScale.inv(v, symC)) : (v => v);
                 // Auto-zoom in plot units, so the margin is a ratio on log scales
                 // rather than a difference that could cross zero.
-                const yRangePlot = zoomRange(allY.map(toPlot), zoomPct);
+                // Cut at zero: the view starts just below 0 so zero points sit on the axis.
+                const yRangePlot = (r => (r && cutAtZero) ? [Math.max(r[0], -0.02 * (r[1] - r[0])), r[1]] : r)(
+                    zoomRange(scaleY.map(toPlot), zoomPct));
                 const yRange = yRangePlot ? yRangePlot.map(fromPlot) : null;
                 const xFinal = axisLimitRange('x', xRange);
                 const yFinal = axisLimitRange('y', yRange);
@@ -4852,11 +4863,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     ? yFinal.map(toPlot) : yRangePlot;
                 const logNote = q('.sp-log-note');
                 if (logNote) {
-                    const dropped = yScale === 'log' ? allY.filter(v => !(v > 0)).length : 0;
-                    logNote.textContent = symC ? 'symmetric log (linear within ±' + PlotScale.fmt(symC) + ')'
-                        : dropped ? dropped + ' point' + (dropped === 1 ? '' : 's') + ' ≤ 0 not shown' : '';
-                    logNote.title = symC ? 'Some values are zero or negative, which a log axis cannot show, so the axis is sign(y)·log10(1 + |y|/' + PlotScale.fmt(symC) + ').'
-                        : dropped ? 'A log axis cannot show zero or negative values. Tick "Negative half" to include them.' : '';
+                    logNote.textContent = !symC ? ''
+                        : (cutAtZero ? 'log from 0 (linear below ' + PlotScale.fmt(symC) + ')' : 'symmetric log (linear within ±' + PlotScale.fmt(symC) + ')')
+                          + (hiddenNeg ? ' · ' + hiddenNeg + ' negative point' + (hiddenNeg === 1 ? '' : 's') + ' not shown' : '');
+                    logNote.title = symC ? 'Some values are zero or negative, which a true log axis cannot show, so the axis is sign(y)·log10(1 + |y|/' + PlotScale.fmt(symC) + '): linear near zero, logarithmic beyond.'
+                        + (cutAtZero ? ' "Negative half" is off, so it starts at 0 and negative values are hidden.' : '') : '';
                 }
                 [['x', xFinal], ['y', yFinal]].forEach((pair) => {
                     const axis = pair[0], r = pair[1];
@@ -4883,7 +4894,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         // span reaches a few decades past the view so zooming out
                         // with the mouse still finds labels.
                         symC && yPlotRange ? Object.assign({ tickmode: 'array' }, PlotScale.DASHED_GRID,
-                            PlotScale.ticks(yPlotRange[0], yPlotRange[1], symC, 3)) : {},
+                            (t => cutAtZero ? PlotScale.nonNegativeTicks(t) : t)(PlotScale.ticks(yPlotRange[0], yPlotRange[1], symC, 3))) : {},
                         yScale === 'log' && yPlotRange ? Object.assign({ tickmode: 'array' }, PlotScale.DASHED_GRID,
                             PlotScale.logTicks(yPlotRange[0], yPlotRange[1], 3)) : {}),
                     showlegend: showLegend,
