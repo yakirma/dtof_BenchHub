@@ -1311,9 +1311,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 </select>
                 <input type="number" step="any" class="form-control form-control-sm sp-lim-min" data-axis="y" placeholder="min" disabled>
                 <input type="number" step="any" class="form-control form-control-sm sp-lim-max" data-axis="y" placeholder="max" disabled>
-                <div class="form-check form-check-inline ms-2 me-0 text-nowrap" title="Logarithmic Y axis. If any shown value is zero or negative it becomes a symmetric log axis (linear near zero, log in both directions), so the negative half stays visible.">
+                <div class="form-check form-check-inline ms-2 me-0 text-nowrap" title="Logarithmic Y axis, labelled at every decade (0.1, 1, 10, ...) with a dashed line at each.">
                     <input class="form-check-input sp-log-y" type="checkbox">
                     <label class="form-check-label small">Log Y</label>
+                </div>
+                <div class="form-check form-check-inline me-0 text-nowrap sp-log-neg-wrap" style="display:none;"
+                    title="Show zero and negative values on a symmetric log axis (linear near zero, log in both directions). Off: a true log axis over the positive values only.">
+                    <input class="form-check-input sp-log-neg" type="checkbox" checked>
+                    <label class="form-check-label small">Negative half</label>
                 </div>
                 <span class="small text-muted text-nowrap sp-log-note"></span>
             </div>
@@ -4826,7 +4831,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 // placeholders stay in data units; toPlot/fromPlot convert to what
                 // Plotly's axis uses (log10 units, or symlog-transformed values).
                 const logY = !!(q('.sp-log-y') && q('.sp-log-y').checked);
-                const yScale = !logY ? 'linear' : (allY.some(v => v <= 0) ? 'symlog' : 'log');
+                // "Negative half" off: a true log axis even when some values are
+                // <= 0 (Plotly leaves those out; the note counts them).
+                const showNeg = !q('.sp-log-neg') || q('.sp-log-neg').checked;
+                if (q('.sp-log-neg-wrap')) q('.sp-log-neg-wrap').style.display = logY ? '' : 'none';
+                const yScale = !logY ? 'linear' : (showNeg && allY.some(v => v <= 0) ? 'symlog' : 'log');
                 const symC = yScale === 'symlog' ? PlotScale.chooseC(allY) : null;
                 if (symC) traces.forEach(t => PlotScale.applyToTrace(t, symC));
                 const toPlot = yScale === 'log' ? Math.log10 : yScale === 'symlog' ? (v => PlotScale.f(v, symC)) : (v => v);
@@ -4843,8 +4852,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     ? yFinal.map(toPlot) : yRangePlot;
                 const logNote = q('.sp-log-note');
                 if (logNote) {
-                    logNote.textContent = symC ? 'symmetric log (linear within ±' + PlotScale.fmt(symC) + ')' : '';
-                    logNote.title = symC ? 'Some values are zero or negative, which a log axis cannot show, so the axis is sign(y)·log10(1 + |y|/' + PlotScale.fmt(symC) + ').' : '';
+                    const dropped = yScale === 'log' ? allY.filter(v => !(v > 0)).length : 0;
+                    logNote.textContent = symC ? 'symmetric log (linear within ±' + PlotScale.fmt(symC) + ')'
+                        : dropped ? dropped + ' point' + (dropped === 1 ? '' : 's') + ' ≤ 0 not shown' : '';
+                    logNote.title = symC ? 'Some values are zero or negative, which a log axis cannot show, so the axis is sign(y)·log10(1 + |y|/' + PlotScale.fmt(symC) + ').'
+                        : dropped ? 'A log axis cannot show zero or negative values. Tick "Negative half" to include them.' : '';
                 }
                 [['x', xFinal], ['y', yFinal]].forEach((pair) => {
                     const axis = pair[0], r = pair[1];
@@ -4865,8 +4877,15 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     xaxis: Object.assign({ title: xLbl, zeroline: false }, xFinal ? { range: xFinal } : { autorange: true }),
                     yaxis: Object.assign({ title: yLbl, zeroline: yScale === 'symlog', type: yScale === 'log' ? 'log' : 'linear' },
                         yPlotRange ? { range: yPlotRange } : { autorange: true },
-                        // Symlog values are transformed, so label the axis in real values.
-                        symC && yPlotRange ? Object.assign({ tickmode: 'array' }, PlotScale.ticks(yPlotRange[0], yPlotRange[1], symC)) : {}),
+                        // Every decade labelled with a dashed line at each, on both log
+                        // scales. Symlog values are transformed, so its ticks are
+                        // placed explicitly and labelled in real values. The tick
+                        // span reaches a few decades past the view so zooming out
+                        // with the mouse still finds labels.
+                        symC && yPlotRange ? Object.assign({ tickmode: 'array' }, PlotScale.DASHED_GRID,
+                            PlotScale.ticks(yPlotRange[0], yPlotRange[1], symC, 3)) : {},
+                        yScale === 'log' && yPlotRange ? Object.assign({ tickmode: 'array' }, PlotScale.DASHED_GRID,
+                            PlotScale.logTicks(yPlotRange[0], yPlotRange[1], 3)) : {}),
                     showlegend: showLegend,
                     // Horizontal legend pinned to the BOTTOM OF THE CONTAINER (yref:
                     // 'container') so it sits below the x-axis title rather than
@@ -4883,7 +4902,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     meta: {
                         // Submission names for meta.pointSubs ids (CSV export, here
                         // and on the shared page, which has no other way to name them).
-                        yScale: yScale, symC: symC,
+                        yScale: yScale, symC: symC, showNeg: showNeg,
                         submissionLabels: Object.fromEntries(Object.entries(SP.submissions || {})
                             .map(([id, m]) => [id, (m && m.label) || id])),
                         yAxis: {
@@ -4947,6 +4966,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             q('.sp-add-filter').addEventListener('click', addFilterRow);
             q('.sp-show-tags').addEventListener('change', plot);
             q('.sp-log-y').addEventListener('change', plot);
+            q('.sp-log-neg').addEventListener('change', plot);
             // The percentile box only applies to the Percentile chart type.
             const syncAggPct = () => { q('.sp-agg-pct-wrap').style.display = selType.value === 'percentile' ? '' : 'none'; };
             selType.addEventListener('change', syncAggPct);

@@ -41,27 +41,55 @@
     // transformed range [lo, hi]. Decades only (m = 1) when that gives enough
     // ticks; 1-2-5 or every integer multiple when the data spans few decades;
     // every other decade when there would be too many.
-    function ticks(lo, hi, c) {
-        const reach = Math.max(Math.abs(lo), Math.abs(hi));
+    // The density is chosen from the visible range [lo, hi]; ticks are then
+    // generated over [lo - pad, hi + pad] (transformed units), so zooming out
+    // with the mouse still finds labelled ticks.
+    function ticks(lo, hi, c, pad) {
+        pad = pad || 0;
         const k0 = Math.floor(Math.log10(c));
-        const inRange = (v) => { const t = f(v, c); return t >= lo - 1e-9 && t <= hi + 1e-9; };
-        function build(mults, step) {
+        function build(mults, a, b) {
+            const reach = Math.max(Math.abs(a), Math.abs(b));
             const vals = [0];
             for (let k = k0, i = 0; k < k0 + 40; k++, i++) {
                 if (f(Math.pow(10, k), c) > reach * 1.0001 && i > 0) break;
-                if (i % step) continue;
                 mults.forEach(m => { const v = m * Math.pow(10, k); vals.push(v, -v); });
             }
-            return vals.filter(inRange).sort((a, b) => a - b);
+            return vals.filter(v => { const t = f(v, c); return t >= a - 1e-9 && t <= b + 1e-9; })
+                .sort((x, y) => x - y);
         }
-        let vals = build([1], 1);
-        if (vals.length > 13) vals = build([1], 2);
-        else if (vals.length < 5) {
-            vals = build([1, 2, 5], 1);
-            if (vals.length < 5) vals = build([1, 2, 3, 4, 5, 6, 7, 8, 9], 1);
+        // Every decade is labelled (no thinning), so 0.1, 1, 10, 100 ... all show.
+        let mults = [1];
+        if (build(mults, lo, hi).length < 5) {
+            mults = [1, 2, 5];
+            if (build(mults, lo, hi).length < 5) mults = [1, 2, 3, 4, 5, 6, 7, 8, 9];
         }
+        const vals = build(mults, lo - pad, hi + pad);
         return { tickvals: vals.map(v => f(v, c)), ticktext: vals.map(fmt) };
     }
+
+    // Ticks for a true log axis whose range is [lo, hi] in log10 units: every
+    // decade (0.1, 1, 10, ...), none skipped. When the range spans too few
+    // decades to read, 2x and 5x (then every integer multiple) are added.
+    // tickvals are in data units, as Plotly expects for a log axis.
+    // As ticks(): density from the visible [lo, hi], values over [lo-pad, hi+pad].
+    function logTicks(lo, hi, pad) {
+        pad = pad || 0;
+        const build = (mults, a, b) => {
+            const vals = [];
+            for (let k = Math.floor(a) - 1; k <= Math.ceil(b) + 1; k++) mults.forEach(m => vals.push(m * Math.pow(10, k)));
+            return vals.filter(v => { const t = Math.log10(v); return t >= a - 1e-9 && t <= b + 1e-9; })
+                .sort((x, y) => x - y);
+        };
+        let mults = [1];
+        if (build(mults, lo, hi).length < 3) {
+            mults = [1, 2, 5];
+            if (build(mults, lo, hi).length < 3) mults = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+        }
+        const vals = build(mults, lo - pad, hi + pad);
+        return { tickvals: vals, ticktext: vals.map(fmt) };
+    }
+    // A dashed horizontal line at every Y tick, for reading values off log axes.
+    const DASHED_GRID = { showgrid: true, gridcolor: 'rgba(0,0,0,0.28)', griddash: 'dash', gridwidth: 1 };
 
     // Replace %{y} in a hovertemplate with the real value, carried per point in
     // customdata (Plotly can't index meta per point).
@@ -196,6 +224,6 @@
     const AGG_KINDS = ['mean', 'std', 'median', 'percentile'];
     function isAggKind(k) { return AGG_KINDS.indexOf(k) >= 0; }
 
-    window.PlotScale = { applyFontSize: applyFontSize, aggregateByX: aggregateByX, aggLabel: aggLabel, isAggKind: isAggKind, f: f, inv: inv, chooseC: chooseC, ticks: ticks, fmt: fmt,
+    window.PlotScale = { logTicks: logTicks, DASHED_GRID: DASHED_GRID, applyFontSize: applyFontSize, aggregateByX: aggregateByX, aggLabel: aggLabel, isAggKind: isAggKind, f: f, inv: inv, chooseC: chooseC, ticks: ticks, fmt: fmt,
                          applyToTrace: applyToTrace, restoreTrace: restoreTrace, realY: realY, realErr: realErr };
 })();

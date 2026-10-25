@@ -52,7 +52,8 @@
                     <input type="range" id="font-size" min="6" max="40" step="1" value="12" style="width:120px;">
                     <span id="font-size-val" style="min-width:40px;">auto</span>
                     <button type="button" id="font-size-reset" title="Back to the size it was shared with">↺</button></label>
-                <label title="Logarithmic Y axis. Values of zero or below can't be drawn on it and are left out."><input type="checkbox" id="log-y"> Log Y</label>
+                <label title="Logarithmic Y axis, labelled at every decade (0.1, 1, 10, ...) with a dashed line at each."><input type="checkbox" id="log-y"> Log Y</label>
+                <label id="log-neg-wrap" style="display:none;" title="Show zero and negative values on a symmetric log axis. Off: a true log axis over the positive values only."><input type="checkbox" id="log-neg" checked> Negative half</label>
             </div>
             <div class="controls" id="controls">
                 <label>Aggregation
@@ -293,11 +294,13 @@
             const logY = document.getElementById('log-y').checked;
             const shownY = [].concat(...data.filter(t => t.visible === true && Array.isArray(t.y)).map(t => t.y))
                 .filter(v => isFinite(v));
-            const yScale = !logY ? 'linear' : (shownY.some(v => v <= 0) ? 'symlog' : 'log');
+            const showNeg = document.getElementById('log-neg').checked;
+            document.getElementById('log-neg-wrap').style.display = logY ? '' : 'none';
+            const yScale = !logY ? 'linear' : (showNeg && shownY.some(v => v <= 0) ? 'symlog' : 'log');
             const symC = yScale === 'symlog' ? PlotScale.chooseC(shownY) : null;
             if (symC) data.forEach(t => PlotScale.applyToTrace(t, symC));
             layout.yaxis = Object.assign({}, layout.yaxis, { type: yScale === 'log' ? 'log' : 'linear', zeroline: yScale === 'symlog' });
-            delete layout.yaxis.tickmode; delete layout.yaxis.tickvals; delete layout.yaxis.ticktext;
+            ['tickmode', 'tickvals', 'ticktext', 'showgrid', 'gridcolor', 'griddash', 'gridwidth'].forEach(k => { delete layout.yaxis[k]; });
             // The shared range is in the shared axis's units (log10 for a log
             // axis, transformed values for symlog), so it is only reused when the
             // scale, and for symlog its threshold, match too.
@@ -333,7 +336,14 @@
                     lo = Math.min(lo, v - dn); hi = Math.max(hi, v + up);
                 }));
                 const r = (layout.yaxis.range && !layout.yaxis.autorange) ? layout.yaxis.range : [lo - 0.1, hi + 0.1];
-                Object.assign(layout.yaxis, { tickmode: 'array' }, PlotScale.ticks(Math.min(r[0], lo), Math.max(r[1], hi), symC));
+                // Every decade labelled, dashed line at each; ticks reach a few
+                // decades past the view for zooming out.
+                Object.assign(layout.yaxis, { tickmode: 'array' }, PlotScale.DASHED_GRID, PlotScale.ticks(r[0], r[1], symC, 3));
+            } else if (yScale === 'log') {
+                const pos = shownY.filter(v => v > 0);
+                const r = (layout.yaxis.range && !layout.yaxis.autorange) ? layout.yaxis.range
+                    : (pos.length ? [Math.log10(Math.min(...pos)), Math.log10(Math.max(...pos))] : null);
+                if (r) Object.assign(layout.yaxis, { tickmode: 'array' }, PlotScale.DASHED_GRID, PlotScale.logTicks(r[0], r[1], 3));
             }
             // Rebuild the Y title the way the app composed it: the axis labels of
             // the fields now shown, then the f(x) and the aggregation in effect
@@ -368,6 +378,9 @@
         }
 
         document.getElementById('log-y').addEventListener('change', render);
+        // Starts as shared: off if the plot was shared with the negative half hidden.
+        document.getElementById('log-neg').checked = !(baseLayout.meta && baseLayout.meta.showNeg === false);
+        document.getElementById('log-neg').addEventListener('change', render);
         // Starts at the size the plot was shared with; untouched on a plot shared
         // without one, so it keeps Plotly's defaults until moved.
         const fsEl = document.getElementById('font-size'), fsVal = document.getElementById('font-size-val');
