@@ -3492,6 +3492,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 <!-- Dynamic Scalar X-Y Plot -->
 <script src="{{ url_for('static', filename='js/plot_csv.js') }}"></script>
 <script src="{{ url_for('static', filename='js/plot_scale.js') }}"></script>
+<script src="{{ url_for('static', filename='js/plot_click.js') }}"></script>
 {% if submissions %}
 <script>
     (function () {
@@ -4445,12 +4446,6 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     .catch(err => showError('Copy failed (' + err.message + '). Use Download ▸ PNG instead.'));
             }
 
-            function pointSubmission(gd, p) {
-                const tr = gd.data && gd.data[p.curveNumber];
-                const subs = tr && tr.meta && tr.meta.pointSubs;
-                const i = Array.isArray(p.pointIndex) ? p.pointIndex[0] : p.pointIndex;
-                return (subs && i != null && subs[i]) ? String(subs[i]) : null;
-            }
             function wirePointClick(gd) {
                 gd = gd || plotDiv;
                 if (gd.removeAllListeners) {
@@ -4460,23 +4455,23 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 }
                 gd.on('plotly_hover', () => { gd.style.cursor = 'pointer'; });
                 gd.on('plotly_unhover', () => { gd.style.cursor = ''; });
+                // Clicking a sample point offers "only this submission" or "all
+                // submissions in the graph" (static/js/plot_click.js), both
+                // filtered to that sample.
                 gd.on('plotly_click', (ev) => {
                     const p = ev && ev.points && ev.points[0];
-                    const sname = p && p.text;
-                    if (!sname) return;
-                    const url = new URL(window.location.href);
-                    // Narrow the comparison to the submission the point belongs to.
-                    // Ground-truth-only points have none and keep the full comparison.
-                    const subId = pointSubmission(gd, p);
-                    if (subId) url.searchParams.set('compare_ids', subId);
-                    url.searchParams.set('search_query', sname);
-                    url.searchParams.set('per_page', '1');
-                    url.searchParams.set('page', '1');
-                    const a = document.createElement('a');
-                    a.href = url.toString(); a.target = '_blank'; a.rel = 'noopener noreferrer';
-                    document.body.appendChild(a);
-                    a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, ctrlKey: true, metaKey: true }));
-                    a.remove();
+                    PlotClick.handleClick({
+                        gd: gd, point: p, event: ev && ev.event,
+                        labelFor: id => { const m = (SP && SP.submissions || {})[id]; return m && m.label; },
+                        urlFor: ids => {
+                            const url = new URL(window.location.href);
+                            if (ids) url.searchParams.set('compare_ids', ids.join(','));
+                            url.searchParams.set('search_query', p.text);
+                            url.searchParams.set('per_page', '1');
+                            url.searchParams.set('page', '1');
+                            return url.toString();
+                        }
+                    });
                 });
             }
 

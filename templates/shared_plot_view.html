@@ -9,6 +9,7 @@
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <script src="{{ url_for('static', filename='js/plot_csv.js') }}"></script>
     <script src="{{ url_for('static', filename='js/plot_scale.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/plot_click.js') }}"></script>
     <style>
         html, body { height: 100%; margin: 0; }
         body {
@@ -444,20 +445,24 @@
                 gd.style.cursor = (p && p.text) ? 'pointer' : '';
             });
             gd.on('plotly_unhover', () => { gd.style.cursor = ''; });
+            // Same menu as the app: only this submission, or all in the graph.
+            // Plots shared before per-point submissions were recorded open the
+            // full comparison directly.
+            const subLabels = (baseLayout.meta && baseLayout.meta.submissionLabels) || {};
             gd.on('plotly_click', (ev) => {
                 const p = ev && ev.points && ev.points[0];
-                if (!p || !p.text) return;
-                const url = new URL(sourcePath, window.location.origin);
-                // Just the clicked point's submission, when the plot recorded it
-                // (plots shared before that keep the full comparison).
-                const tr = gd.data[p.curveNumber];
-                const subs = tr && tr.meta && tr.meta.pointSubs;
-                const pi = Array.isArray(p.pointIndex) ? p.pointIndex[0] : p.pointIndex;
-                if (subs && pi != null && subs[pi]) url.searchParams.set('compare_ids', String(subs[pi]));
-                url.searchParams.set('search_query', p.text);
-                url.searchParams.set('per_page', '1');
-                url.searchParams.set('page', '1');
-                window.open(url.toString(), '_blank', 'noopener');
+                PlotClick.handleClick({
+                    gd: gd, point: p, event: ev && ev.event,
+                    labelFor: id => subLabels[id],
+                    urlFor: ids => {
+                        const url = new URL(sourcePath, window.location.origin);
+                        if (ids) url.searchParams.set('compare_ids', ids.join(','));
+                        url.searchParams.set('search_query', p.text);
+                        url.searchParams.set('per_page', '1');
+                        url.searchParams.set('page', '1');
+                        return url.toString();
+                    }
+                });
             });
         });
     </script>
