@@ -3869,8 +3869,24 @@ def leaderboard_view(project_name, leaderboard_id):
             else:
                 metrics_ranges[metric] = {'min': 0, 'max': 0}
     
-    # Apply sorting if requested
-    if sort_metric and sort_metric in all_metrics:
+    # Apply sorting if requested. Besides the metric columns, the fixed columns
+    # sort too (keys start with "__" so they can't collide with a metric name).
+    # Empty values follow, last in both directions.
+    submission_sort_keys = {
+        '__name': lambda s: (s.name or '').lower() or None,
+        '__tags': lambda s: ', '.join(sorted(t.name.lower() for t in s.tags)) or None,
+        '__date': lambda s: s.upload_date,
+        '__git': lambda s: ((s.git_author or '').lower(), (s.git_branch or '').lower())
+                           if (s.git_author or s.git_branch) else None,
+        '__status': lambda s: (s.processing_status or '').lower() or None,
+    }
+    if sort_metric in submission_sort_keys:
+        key_fn = submission_sort_keys[sort_metric]
+        with_value = [s for s in submissions if key_fn(s) is not None]
+        without_value = [s for s in submissions if key_fn(s) is None]
+        with_value.sort(key=key_fn, reverse=(sort_order == 'desc'))
+        submissions = with_value + without_value
+    elif sort_metric and sort_metric in all_metrics:
         # A cell can hold a number, None (not computed), NaN, or the metric's
         # error message (a string). Mixing a string into the sort key made the
         # whole page fail with a TypeError, and a NaN scrambled the order, so
