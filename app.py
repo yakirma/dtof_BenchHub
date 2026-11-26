@@ -3871,17 +3871,24 @@ def leaderboard_view(project_name, leaderboard_id):
     
     # Apply sorting if requested
     if sort_metric and sort_metric in all_metrics:
-        def get_metric_value(sub):
+        # A cell can hold a number, None (not computed), NaN, or the metric's
+        # error message (a string). Mixing a string into the sort key made the
+        # whole page fail with a TypeError, and a NaN scrambled the order, so
+        # only finite numbers are sorted; everything else follows in its
+        # existing order, last in both directions.
+        def sortable_value(sub):
             if sort_metric in AVAILABLE_METRICS:
-                val = getattr(sub, sort_metric)
-                return val if val is not None else float('inf')
-            elif sort_metric in all_metrics:
-                # Dynamic or Custom metric
+                val = getattr(sub, sort_metric, None)
+            else:
                 val = calculated_dynamic_values.get(sub.id, {}).get(sort_metric)
-                return val if val is not None else float('inf')
-            return float('inf')
-        
-        submissions.sort(key=get_metric_value, reverse=(sort_order == 'desc'))
+            if isinstance(val, bool) or not isinstance(val, (int, float)):
+                return None
+            return float(val) if math.isfinite(val) else None
+
+        with_value = [s for s in submissions if sortable_value(s) is not None]
+        without_value = [s for s in submissions if sortable_value(s) is None]
+        with_value.sort(key=sortable_value, reverse=(sort_order == 'desc'))
+        submissions = with_value + without_value
 
     # Prepare Aggregation Info for UI
     from sqlalchemy import inspect
