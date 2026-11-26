@@ -2236,13 +2236,32 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         const x = chart.scales.x;
         histZoom = (x && isFinite(x.min) && isFinite(x.max)) ? { min: x.min, max: x.max } : null;
     };
+    // The X range the chart is showing, if it differs from its full range (i.e.
+    // it is zoomed or panned), else null.
+    function currentHistZoom(chart) {
+        const x = chart && chart.scales && chart.scales.x, full = chart && chart.$fullX;
+        if (!x || !full || !isFinite(x.min) || !isFinite(x.max)) return null;
+        const eps = Math.abs(full.max - full.min) * 1e-6;
+        const zoomed = Math.abs(x.min - full.min) > eps || Math.abs(x.max - full.max) > eps;
+        return zoomed ? { min: x.min, max: x.max } : null;
+    }
     const createInteractiveChart = (title, labels, data, sample) => {
-        if (modalChart) modalChart.destroy();
+        if (modalChart) {
+            // Carry the zoom over from what the outgoing chart actually shows,
+            // whatever gesture produced it (wheel, pinch, drag, Start/End bin).
+            // Relying only on the zoom plugin's completion callbacks lost a
+            // zoom whenever those didn't fire before switching.
+            histZoom = currentHistZoom(modalChart);
+            modalChart.destroy();
+        }
         document.getElementById('chartModalLabel').textContent = title;
         const yMax = (histSharedY && sample) ? histRowMax(sample) : undefined;
         const xr = sample ? histRowXRange(sample) : null;
         const zoomCfg = modalBarOptions.plugins.zoom;
         const options = Object.assign({}, modalBarOptions, {
+            // Switching histograms recreates the chart; without this every switch
+            // replayed Chart.js's grow-in animation.
+            animation: false,
             plugins: Object.assign({}, modalBarOptions.plugins, {
                 zoom: Object.assign({}, zoomCfg, {
                     // Bin units now (numeric axis): allow zooming to ~5 bins.
@@ -2275,6 +2294,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             options: options
         });
         modalChart.$sample = sample;
+        modalChart.$fullX = { min: modalChart.scales.x.min, max: modalChart.scales.x.max };
         if (histZoom) modalChart.zoomScale('x', histZoom, 'none');
         // chartModal.show(); // Removed auto-show to support gallery update
     };
@@ -2467,7 +2487,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
     // Slider event listener removed
 
-    document.getElementById('chart-modal').addEventListener('hidden.bs.modal', () => { histZoom = null; });
+    // Closing starts the next opening fresh: drop the zoom and the chart it
+    // would otherwise be read back from.
+    document.getElementById('chart-modal').addEventListener('hidden.bs.modal', () => {
+        histZoom = null;
+        if (modalChart) { modalChart.destroy(); modalChart = null; }
+    });
     // "Same Y scale" switch: applies to the modal and every inline histogram.
     const sharedYBox = document.getElementById('hist-shared-y');
     if (sharedYBox) {
